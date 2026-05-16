@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from math import exp
 from statistics import mean
 
 import chess
@@ -45,6 +46,8 @@ class GameReport:
     url: str
     end_time: str
     total_player_moves: int
+    accuracy_rating: float
+    accuracy_label: str
     average_cp_loss: float
     inaccuracies: int
     mistakes: int
@@ -172,6 +175,7 @@ def analyze_latest_game(
         reverse=True,
     )
     top_mistakes = sorted_mistakes[:max_mistakes]
+    accuracy_rating = _accuracy_rating(cp_losses)
 
     return GameReport(
         username=username,
@@ -182,6 +186,8 @@ def analyze_latest_game(
         url=str(latest_game.game.get("url", "")),
         end_time=_format_timestamp(int(latest_game.game["end_time"])),
         total_player_moves=player_moves,
+        accuracy_rating=accuracy_rating,
+        accuracy_label=_accuracy_label(accuracy_rating),
         average_cp_loss=mean(cp_losses) if cp_losses else 0.0,
         inaccuracies=sum(1 for item in mistakes if item.severity == "Inaccuracy"),
         mistakes=sum(1 for item in mistakes if item.severity == "Mistake"),
@@ -209,6 +215,7 @@ def render_report(report: GameReport) -> str:
             "",
             "## Accuracy Snapshot",
             f"- Player moves analyzed: {report.total_player_moves}",
+            f"- Accuracy rating: {report.accuracy_rating:.1f}/100 ({report.accuracy_label})",
             f"- Average centipawn loss: {report.average_cp_loss:.1f}",
             f"- Inaccuracies: {report.inaccuracies}",
             f"- Mistakes: {report.mistakes}",
@@ -275,6 +282,28 @@ def _classify_severity(
     if cp_loss >= 20:
         return "Inaccuracy"
     return None
+
+
+def _accuracy_rating(cp_losses: list[int]) -> float:
+    if not cp_losses:
+        return 0.0
+    return mean(_move_accuracy(cp_loss) for cp_loss in cp_losses)
+
+
+def _move_accuracy(cp_loss: int) -> float:
+    return max(0.0, min(100.0, 100.0 * exp(-cp_loss / 125.0)))
+
+
+def _accuracy_label(accuracy_rating: float) -> str:
+    if accuracy_rating >= 95:
+        return "Excellent"
+    if accuracy_rating >= 85:
+        return "Strong"
+    if accuracy_rating >= 70:
+        return "Solid"
+    if accuracy_rating >= 55:
+        return "Shaky"
+    return "Rough"
 
 
 def _severity_rank(severity: str) -> int:
