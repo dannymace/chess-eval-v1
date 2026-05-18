@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import os
 import re
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from math import exp
@@ -58,8 +59,25 @@ class GameReport:
     mistakes: int
     misses: int
     blunders: int
+    flagged_moves: list[Mistake]
     top_mistakes: list[Mistake]
     takeaway: str
+
+
+@dataclass(slots=True)
+class TrendReport:
+    username: str
+    games: list[GameReport]
+    total_player_moves: int
+    average_accuracy: float
+    average_cp_loss: float
+    inaccuracies: int
+    mistakes: int
+    misses: int
+    blunders: int
+    common_openings: list[tuple[str, int]]
+    phase_counts: dict[str, int]
+    recurring_lessons: list[str]
 
 
 def analyze_latest_game(
@@ -224,8 +242,38 @@ def analyze_latest_game(
         mistakes=sum(1 for item in mistakes if item.severity == "Mistake"),
         misses=sum(1 for item in mistakes if item.severity == "Miss"),
         blunders=sum(1 for item in mistakes if item.severity == "Blunder"),
+        flagged_moves=sorted_mistakes,
         top_mistakes=top_mistakes,
         takeaway=_build_takeaway(top_mistakes),
+    )
+
+
+def build_trend_report(username: str, reports: list[GameReport]) -> TrendReport:
+    if not reports:
+        raise ValueError("At least one game report is required.")
+
+    serious_moves = [
+        item
+        for report in reports
+        for item in report.flagged_moves
+        if item.severity != "Inaccuracy"
+    ]
+    opening_counts = Counter(report.opening for report in reports)
+    phase_counts = Counter(item.phase for item in serious_moves)
+
+    return TrendReport(
+        username=username,
+        games=reports,
+        total_player_moves=sum(report.total_player_moves for report in reports),
+        average_accuracy=mean(report.accuracy_rating for report in reports),
+        average_cp_loss=mean(report.average_cp_loss for report in reports),
+        inaccuracies=sum(report.inaccuracies for report in reports),
+        mistakes=sum(report.mistakes for report in reports),
+        misses=sum(report.misses for report in reports),
+        blunders=sum(report.blunders for report in reports),
+        common_openings=opening_counts.most_common(5),
+        phase_counts=dict(phase_counts),
+        recurring_lessons=_build_recurring_lessons(reports),
     )
 
 
@@ -284,6 +332,50 @@ def render_report(report: GameReport) -> str:
             report.takeaway,
         ]
     )
+
+    return "\n".join(lines)
+
+
+def render_trend_report(report: TrendReport) -> str:
+    lines = [
+        f"# Chess Eval Trend: {report.username}",
+        "",
+        f"- Games analyzed: {len(report.games)}",
+        f"- Player moves analyzed: {report.total_player_moves}",
+        f"- Average accuracy: {report.average_accuracy:.1f}/100 ({_accuracy_label(report.average_accuracy)})",
+        f"- Average centipawn loss: {report.average_cp_loss:.1f}",
+        f"- Inaccuracies: {report.inaccuracies}",
+        f"- Mistakes: {report.mistakes}",
+        f"- Misses: {report.misses}",
+        f"- Blunders: {report.blunders}",
+        "",
+        "## Recurring Lessons",
+    ]
+
+    for lesson in report.recurring_lessons:
+        lines.append(f"- {lesson}")
+
+    lines.extend(["", "## Common Openings"])
+    for opening, count in report.common_openings:
+        lines.append(f"- {opening}: {count} game{_plural(count)}")
+
+    if report.phase_counts:
+        lines.extend(["", "## Serious Issues By Phase"])
+        for phase, count in sorted(
+            report.phase_counts.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        ):
+            lines.append(f"- {phase}: {count}")
+
+    lines.extend(["", "## Recent Games"])
+    for game in report.games:
+        lines.append(
+            f"- {game.end_time}: {game.color} {game.result}, "
+            f"{game.accuracy_rating:.1f}/100, "
+            f"I/Mistake/Miss/B {game.inaccuracies}/{game.mistakes}/{game.misses}/{game.blunders}, "
+            f"{game.opening}"
+        )
 
     return "\n".join(lines)
 
@@ -577,3 +669,87 @@ def _build_takeaway(top_mistakes: list[Mistake]) -> str:
     if any("forcing" in item.note.lower() for item in top_mistakes):
         return "You missed forcing ideas in critical positions. Spend time checking candidate captures and checks before choosing a move."
     return "The main pattern was calculation drift in sharp positions. Slow down at turning points and compare your move against at least one forcing alternative."
+
+
+def _build_recurring_lessons(reports: list[GameReport]) -> list[str]:
+    serious_moves = [
+        item
+        for report in reports
+        for item in report.flagged_moves
+        if item.severity != "Inaccuracy"
+    ]
+    if not serious_moves:
+        return [
+            "No recurring serious issue was detected. Review the listed inaccuracies for smaller technique improvements."
+        ]
+
+    pattern_counts = Counter(_lesson_key(item) for item in serious_moves)
+    total = len(serious_moves)
+    lessons = [
+        _lesson_text(key, count, total)
+        for key, count in pattern_counts.most_common()
+        if count >= 2 or len(reports) <= 2
+    ]
+
+    if len(lessons) < 3:
+        average_accuracy = mean(report.accuracy_rating for report in reports)
+        if average_accuracy < 75:
+            lessons.append(
+                "Accuracy is consistently below the solid range. Use a slower review pass after each game and write down the first move where your plan changed."
+            )
+        else:
+            lessons.append(
+                "The most useful review habit is to replay only the serious flagged moments and solve each one before revealing the engine move."
+            )
+
+    return lessons[:3]
+
+
+def _lesson_key(item: Mistake) -> str:
+    note = item.note.lower()
+    if item.severity == "Miss":
+        return "missed_conversion"
+    if "capture" in note or "check" in note or "forcing" in note:
+        return "forcing_scan"
+    if "king" in note:
+        return "king_safety"
+    if item.phase == "Opening":
+        return "opening"
+    if item.phase == "Endgame":
+        return "endgame"
+    return "calculation"
+
+
+def _lesson_text(key: str, count: int, total: int) -> str:
+    evidence = f"{count} of {total} serious flag{_plural(total)}"
+    lesson_map = {
+        "missed_conversion": (
+            f"Missed conversion chances recurred ({evidence}). "
+            "When you are better, pause for candidate checks, captures, and threats before choosing a quiet move."
+        ),
+        "forcing_scan": (
+            f"Forcing-move blindness showed up repeatedly ({evidence}). "
+            "Before committing, do a short scan of checks, captures, and direct threats."
+        ),
+        "king_safety": (
+            f"King-safety concessions recurred ({evidence}). "
+            "Treat pawn moves near your king as candidate weaknesses, especially before the endgame."
+        ),
+        "opening": (
+            f"Opening decisions created repeated problems ({evidence}). "
+            "Review the first 10 moves and learn the plans behind the opening, not just the move order."
+        ),
+        "endgame": (
+            f"Endgame precision was a recurring leak ({evidence}). "
+            "Convert the flagged positions into practice FENs and solve them without the engine first."
+        ),
+        "calculation": (
+            f"Calculation drift was the main theme ({evidence}). "
+            "At turning points, compare your intended move with at least one forcing alternative."
+        ),
+    }
+    return lesson_map[key]
+
+
+def _plural(count: int) -> str:
+    return "" if count == 1 else "s"
