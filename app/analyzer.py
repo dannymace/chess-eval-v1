@@ -34,6 +34,7 @@ class Mistake:
     best_score: str
     played_score: str
     cp_loss: int
+    expected_points_loss: float
     severity: str
     note: str
     top_lines: list[CandidateMove]
@@ -48,12 +49,14 @@ class GameReport:
     time_class: str
     url: str
     end_time: str
+    player_rating: int | None
     total_player_moves: int
     accuracy_rating: float
     accuracy_label: str
     average_cp_loss: float
     inaccuracies: int
     mistakes: int
+    misses: int
     blunders: int
     top_mistakes: list[Mistake]
     takeaway: str
@@ -81,10 +84,12 @@ def analyze_latest_game(
         player_color = chess.WHITE
         color_name = "White"
         player_result = latest_game.game.get("white", {}).get("result", "")
+        player_rating = _parse_rating(game.headers.get("WhiteElo", ""))
     elif black_name.lower() == username.lower():
         player_color = chess.BLACK
         color_name = "Black"
         player_result = latest_game.game.get("black", {}).get("result", "")
+        player_rating = _parse_rating(game.headers.get("BlackElo", ""))
     else:
         raise RuntimeError(
             f"Latest game PGN did not match requested user '{username}'. "
@@ -145,7 +150,17 @@ def analyze_latest_game(
                 )
                 cp_losses.append(cp_loss)
 
-                severity = _classify_severity(best_score, played_score, cp_loss)
+                expected_points_loss = _expected_points_loss(
+                    best_score,
+                    played_score,
+                    player_rating,
+                )
+                severity = _classify_severity(
+                    best_score,
+                    played_score,
+                    expected_points_loss,
+                    player_rating,
+                )
                 if severity is not None:
                     mistakes.append(
                         Mistake(
@@ -156,8 +171,15 @@ def analyze_latest_game(
                             best_score=_format_score(best_score),
                             played_score=_format_score(played_score),
                             cp_loss=cp_loss,
+                            expected_points_loss=expected_points_loss,
                             severity=severity,
-                            note=_mistake_note(board, move, best_move, cp_loss),
+                            note=_mistake_note(
+                                board,
+                                move,
+                                best_move,
+                                cp_loss,
+                                severity,
+                            ),
                             top_lines=[
                                 CandidateMove(
                                     san=board.san(info["pv"][0]),
@@ -175,7 +197,11 @@ def analyze_latest_game(
 
     sorted_mistakes = sorted(
         mistakes,
-        key=lambda item: (item.cp_loss, _severity_rank(item.severity)),
+        key=lambda item: (
+            item.expected_points_loss,
+            _severity_rank(item.severity),
+            item.cp_loss,
+        ),
         reverse=True,
     )
     top_mistakes = sorted_mistakes[:max_mistakes]
@@ -189,12 +215,14 @@ def analyze_latest_game(
         time_class=str(latest_game.game.get("time_class", "unknown")),
         url=str(latest_game.game.get("url", "")),
         end_time=_format_timestamp(int(latest_game.game["end_time"])),
+        player_rating=player_rating,
         total_player_moves=player_moves,
         accuracy_rating=accuracy_rating,
         accuracy_label=_accuracy_label(accuracy_rating),
         average_cp_loss=mean(cp_losses) if cp_losses else 0.0,
         inaccuracies=sum(1 for item in mistakes if item.severity == "Inaccuracy"),
         mistakes=sum(1 for item in mistakes if item.severity == "Mistake"),
+        misses=sum(1 for item in mistakes if item.severity == "Miss"),
         blunders=sum(1 for item in mistakes if item.severity == "Blunder"),
         top_mistakes=top_mistakes,
         takeaway=_build_takeaway(top_mistakes),
@@ -211,6 +239,8 @@ def render_report(report: GameReport) -> str:
         f"- Time class: {report.time_class}",
         f"- Ended: {report.end_time}",
     ]
+    if report.player_rating is not None:
+        lines.append(f"- Player rating: {report.player_rating}")
     if report.url:
         lines.append(f"- Game URL: {report.url}")
 
@@ -223,6 +253,7 @@ def render_report(report: GameReport) -> str:
             f"- Average centipawn loss: {report.average_cp_loss:.1f}",
             f"- Inaccuracies: {report.inaccuracies}",
             f"- Mistakes: {report.mistakes}",
+            f"- Misses: {report.misses}",
             f"- Blunders: {report.blunders}",
             "",
             "## Biggest Moments",
@@ -239,7 +270,8 @@ def render_report(report: GameReport) -> str:
             lines.extend(
                 [
                     f"- {item.move_label} [{item.phase}] {item.severity}: played `{item.played}` instead of `{item.best}`.",
-                    f"  Eval swing: {item.cp_loss} cp. Best line {item.best_score}; played line {item.played_score}.",
+                    f"  Expected-points loss: {item.expected_points_loss:.2f}. Eval swing: {item.cp_loss} cp.",
+                    f"  Best line {item.best_score}; played line {item.played_score}.",
                     f"  Note: {item.note}",
                     f"  Engine candidates: {candidate_text}",
                 ]
@@ -272,20 +304,59 @@ def _format_score(score: chess.engine.Score) -> str:
 def _classify_severity(
     best_score: chess.engine.Score,
     played_score: chess.engine.Score,
-    cp_loss: int,
+    expected_points_loss: float,
+    player_rating: int | None,
 ) -> str | None:
-    best_mate = best_score.mate()
-    played_mate = played_score.mate()
+    best_ep = _expected_points(best_score, player_rating)
+    played_ep = _expected_points(played_score, player_rating)
 
-    if best_mate is not None and (played_mate is None or abs(played_mate) > abs(best_mate)):
+    if _is_miss(best_ep, played_ep, expected_points_loss):
+        return "Miss"
+    if expected_points_loss >= 0.20:
         return "Blunder"
-    if cp_loss >= 150:
-        return "Blunder"
-    if cp_loss >= 60:
+    if expected_points_loss >= 0.10:
         return "Mistake"
-    if cp_loss >= 20:
+    if expected_points_loss >= 0.05:
         return "Inaccuracy"
     return None
+
+
+def _expected_points_loss(
+    best_score: chess.engine.Score,
+    played_score: chess.engine.Score,
+    player_rating: int | None,
+) -> float:
+    return max(
+        0.0,
+        _expected_points(best_score, player_rating)
+        - _expected_points(played_score, player_rating),
+    )
+
+
+def _expected_points(score: chess.engine.Score, player_rating: int | None) -> float:
+    mate = score.mate()
+    if mate is not None:
+        return 1.0 if mate > 0 else 0.0
+
+    centipawns = score.score(mate_score=MATE_SCORE)
+    if centipawns is None:
+        return 0.5
+
+    scale = _expected_points_scale(player_rating)
+    return 1.0 / (1.0 + exp(-centipawns / scale))
+
+
+def _expected_points_scale(player_rating: int | None) -> float:
+    rating = player_rating if player_rating is not None else 1200
+    return max(120.0, min(260.0, 260.0 - (rating * 0.06)))
+
+
+def _is_miss(
+    best_ep: float,
+    played_ep: float,
+    expected_points_loss: float,
+) -> bool:
+    return best_ep >= 0.74 and played_ep <= 0.70 and expected_points_loss >= 0.10
 
 
 def _resolve_threads(threads: int) -> int:
@@ -404,7 +475,7 @@ def _accuracy_label(accuracy_rating: float) -> str:
 
 
 def _severity_rank(severity: str) -> int:
-    return {"Inaccuracy": 1, "Mistake": 2, "Blunder": 3}[severity]
+    return {"Inaccuracy": 1, "Mistake": 2, "Miss": 3, "Blunder": 4}[severity]
 
 
 def _move_label(board: chess.Board, san: str) -> str:
@@ -427,7 +498,10 @@ def _mistake_note(
     played_move: chess.Move,
     best_move: chess.Move,
     cp_loss: int,
+    severity: str,
 ) -> str:
+    if severity == "Miss":
+        return "You missed a chance to move into or keep a clearly better position."
     if board.is_capture(best_move) and not board.is_capture(played_move):
         return "You passed on a forcing capture that Stockfish preferred."
     if board.gives_check(best_move) and not board.gives_check(played_move):
@@ -474,6 +548,13 @@ def _normalize_result(raw_result: str) -> str:
     return mapping.get(raw_result, raw_result.title() if raw_result else "Unknown")
 
 
+def _parse_rating(raw_rating: str) -> int | None:
+    try:
+        return int(raw_rating)
+    except ValueError:
+        return None
+
+
 def _format_timestamp(timestamp: int) -> str:
     return datetime.fromtimestamp(timestamp, tz=UTC).astimezone().strftime(
         "%Y-%m-%d %H:%M:%S %Z"
@@ -491,6 +572,8 @@ def _build_takeaway(top_mistakes: list[Mistake]) -> str:
         return "Your biggest losses came early. Focus on understanding the plans in this opening rather than memorizing moves alone."
     if endgame_count >= 2:
         return "The game was decided late. Endgame precision was the main leak, so review the final conversion or defense phase carefully."
+    if any(item.severity == "Miss" for item in top_mistakes):
+        return "The biggest pattern was missed conversion chances. When you get an advantage, pause to look for the forcing move that keeps it."
     if any("forcing" in item.note.lower() for item in top_mistakes):
         return "You missed forcing ideas in critical positions. Spend time checking candidate captures and checks before choosing a move."
     return "The main pattern was calculation drift in sharp positions. Slow down at turning points and compare your move against at least one forcing alternative."
