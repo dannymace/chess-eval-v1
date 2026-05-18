@@ -43,6 +43,7 @@ class Mistake:
     expected_points_loss: float
     severity: str
     note: str
+    motifs: list[str]
     top_lines: list[CandidateMove]
 
 
@@ -64,6 +65,7 @@ class GameReport:
     mistakes: int
     misses: int
     blunders: int
+    tactical_patterns: list[tuple[str, int]]
     flagged_moves: list[Mistake]
     top_mistakes: list[Mistake]
     takeaway: str
@@ -82,6 +84,7 @@ class TrendReport:
     blunders: int
     common_openings: list[tuple[str, int]]
     phase_counts: dict[str, int]
+    tactical_patterns: list[tuple[str, int]]
     recurring_lessons: list[str]
 
 
@@ -206,6 +209,7 @@ def analyze_latest_game(
                                 cp_loss,
                                 severity,
                             ),
+                            motifs=_detect_tactical_motifs(board, move, best_move),
                             top_lines=[
                                 CandidateMove(
                                     san=board.san(info["pv"][0]),
@@ -250,6 +254,7 @@ def analyze_latest_game(
         mistakes=sum(1 for item in mistakes if item.severity == "Mistake"),
         misses=sum(1 for item in mistakes if item.severity == "Miss"),
         blunders=sum(1 for item in mistakes if item.severity == "Blunder"),
+        tactical_patterns=_motif_counts(sorted_mistakes),
         flagged_moves=sorted_mistakes,
         top_mistakes=top_mistakes,
         takeaway=_build_takeaway(top_mistakes),
@@ -268,19 +273,26 @@ def build_trend_report(username: str, reports: list[GameReport]) -> TrendReport:
     ]
     opening_counts = Counter(report.opening for report in reports)
     phase_counts = Counter(item.phase for item in serious_moves)
+    motif_counts = Counter(
+        motif
+        for report in reports
+        for item in report.flagged_moves
+        for motif in item.motifs
+    )
 
     return TrendReport(
         username=username,
         games=reports,
         total_player_moves=sum(report.total_player_moves for report in reports),
         average_accuracy=mean(report.accuracy_rating for report in reports),
-        average_cp_loss=mean(report.average_cp_loss for report in reports),
+        average_cp_loss=_weighted_average_cp_loss(reports),
         inaccuracies=sum(report.inaccuracies for report in reports),
         mistakes=sum(report.mistakes for report in reports),
         misses=sum(report.misses for report in reports),
         blunders=sum(report.blunders for report in reports),
         common_openings=opening_counts.most_common(5),
         phase_counts=dict(phase_counts),
+        tactical_patterns=motif_counts.most_common(8),
         recurring_lessons=_build_recurring_lessons(reports),
     )
 
@@ -328,10 +340,16 @@ def render_report(report: GameReport) -> str:
                     f"- {item.move_label} [{item.phase}] {item.severity}: played `{item.played}` instead of `{item.best}`.",
                     f"  Expected-points loss: {item.expected_points_loss:.2f}. Eval swing: {item.cp_loss} cp.",
                     f"  Best line {item.best_score}; played line {item.played_score}.",
+                    f"  Tactical patterns: {', '.join(item.motifs)}.",
                     f"  Note: {item.note}",
                     f"  Engine candidates: {candidate_text}",
                 ]
             )
+
+    if report.tactical_patterns:
+        lines.extend(["", "## Tactical Patterns"])
+        for motif, count in report.tactical_patterns:
+            lines.append(f"- {motif}: {count}")
 
     lines.extend(
         [
@@ -376,6 +394,11 @@ def render_trend_report(report: TrendReport) -> str:
         ):
             lines.append(f"- {phase}: {count}")
 
+    if report.tactical_patterns:
+        lines.extend(["", "## Recurring Tactical Patterns"])
+        for motif, count in report.tactical_patterns:
+            lines.append(f"- {motif}: {count}")
+
     lines.extend(["", "## Recent Games"])
     for game in report.games:
         lines.append(
@@ -406,6 +429,7 @@ def render_html_report(report: GameReport) -> str:
     ]
     if report.player_rating is not None:
         meta_rows.append(("Player rating", str(report.player_rating)))
+    motif_rows = _rank_rows(report.tactical_patterns)
 
     return _html_document(
         title=f"Chess Eval V1: {report.username}",
@@ -419,7 +443,7 @@ def render_html_report(report: GameReport) -> str:
 <main>
   <section class="summary-grid">
     {_metric_card("Accuracy", f"{report.accuracy_rating:.1f}", f"{report.accuracy_label} / 100")}
-    {_metric_card("Average loss", f"{report.average_cp_loss:.1f}", "centipawns")}
+    {_metric_card("ACPL", f"{report.average_cp_loss:.1f}", "centipawns per move")}
     {_metric_card("Moves", str(report.total_player_moves), "player moves analyzed")}
     {_metric_card("Issues", str(report.mistakes + report.misses + report.blunders), "mistakes, misses, blunders")}
   </section>
@@ -446,6 +470,14 @@ def render_html_report(report: GameReport) -> str:
     </div>
     <div class="moments">{moment_cards}</div>
   </section>
+
+  <section class="panel">
+    <div class="section-head">
+      <p class="eyebrow">Tactics</p>
+      <h2>Detected Patterns</h2>
+    </div>
+    <ul class="rank-list">{motif_rows}</ul>
+  </section>
 </main>
 """,
     )
@@ -470,7 +502,7 @@ def render_html_trend_report(report: TrendReport) -> str:
     )
     if not top_issue_rows:
         top_issue_rows = (
-            '<tr><td colspan="6">No major moments were flagged.</td></tr>'
+            '<tr><td colspan="7">No major moments were flagged.</td></tr>'
         )
 
     opening_rows = "\n".join(
@@ -488,6 +520,7 @@ def render_html_trend_report(report: TrendReport) -> str:
     lesson_rows = "\n".join(
         f"<li>{escape(lesson)}</li>" for lesson in report.recurring_lessons
     )
+    motif_rows = _rank_rows(report.tactical_patterns)
     game_rows = "\n".join(_render_recent_game_row(game) for game in report.games)
 
     return _html_document(
@@ -502,7 +535,7 @@ def render_html_trend_report(report: TrendReport) -> str:
 <main>
   <section class="summary-grid">
     {_metric_card("Average accuracy", f"{report.average_accuracy:.1f}", f"{_accuracy_label(report.average_accuracy)} / 100")}
-    {_metric_card("Average loss", f"{report.average_cp_loss:.1f}", "centipawns")}
+    {_metric_card("ACPL", f"{report.average_cp_loss:.1f}", "centipawns per move")}
     {_metric_card("Games", str(len(report.games)), "recent games analyzed")}
     {_metric_card("Serious issues", str(report.mistakes + report.misses + report.blunders), "mistakes, misses, blunders")}
   </section>
@@ -530,6 +563,14 @@ def render_html_trend_report(report: TrendReport) -> str:
       </div>
       <ul class="rank-list">{phase_rows}</ul>
     </div>
+  </section>
+
+  <section class="panel">
+    <div class="section-head">
+      <p class="eyebrow">Tactics</p>
+      <h2>Recurring Tactical Patterns</h2>
+    </div>
+    <ul class="rank-list">{motif_rows}</ul>
   </section>
 
   <section class="panel">
@@ -566,9 +607,10 @@ def render_html_trend_report(report: TrendReport) -> str:
             <th>Game</th>
             <th>Move</th>
             <th>Type</th>
-            <th>Played</th>
-            <th>Best</th>
-            <th>Expected loss</th>
+      <th>Played</th>
+      <th>Best</th>
+      <th>Patterns</th>
+      <th>Expected loss</th>
           </tr>
         </thead>
         <tbody>{top_issue_rows}</tbody>
@@ -910,6 +952,26 @@ def _html_document(title: str, body: str) -> str:
       font-size: 0.86rem;
     }}
 
+    .motif-list {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 0;
+      margin: 12px 0 0;
+      list-style: none;
+    }}
+
+    .motif-list li {{
+      border: 1px solid rgba(40, 109, 143, 0.24);
+      border-radius: 999px;
+      padding: 6px 9px;
+      background: rgba(40, 109, 143, 0.08);
+      color: #214c61;
+      font-family: "Trebuchet MS", Verdana, sans-serif;
+      font-size: 0.84rem;
+      font-weight: 700;
+    }}
+
     .split {{
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -1028,6 +1090,15 @@ def _metric_card(label: str, value: str, hint: str) -> str:
     )
 
 
+def _rank_rows(rows: list[tuple[str, int]]) -> str:
+    if not rows:
+        return "<li><span>No tactical pattern detected</span><strong>0</strong></li>"
+    return "\n".join(
+        f"<li><span>{escape(label)}</span><strong>{count}</strong></li>"
+        for label, count in rows
+    )
+
+
 def _render_recent_game_row(game: GameReport) -> str:
     issues = (
         f"I {game.inaccuracies} / M {game.mistakes} / "
@@ -1046,6 +1117,7 @@ def _render_recent_game_row(game: GameReport) -> str:
 
 
 def _render_top_issue_row(game: GameReport, item: Mistake) -> str:
+    motifs = ", ".join(item.motifs)
     return f"""
 <tr>
   <td>{escape(game.end_time)}<div class="table-muted">{escape(game.opening)}</div></td>
@@ -1053,6 +1125,7 @@ def _render_top_issue_row(game: GameReport, item: Mistake) -> str:
   <td><span class="badge {_severity_class(item.severity)}">{escape(item.severity)}</span></td>
   <td>{escape(item.played)}</td>
   <td>{escape(item.best)}</td>
+  <td>{escape(motifs)}</td>
   <td><strong>{item.expected_points_loss:.2f}</strong><div class="table-muted">{item.cp_loss} cp</div></td>
 </tr>
 """
@@ -1082,6 +1155,9 @@ def _render_moment_card(
         f"<li>{escape(candidate.san)} <strong>{escape(candidate.score)}</strong></li>"
         for candidate in item.top_lines[:3]
     )
+    motif_items = "\n".join(
+        f"<li>{escape(motif)}</li>" for motif in item.motifs
+    )
     subtitle_html = f'<p class="subtitle">{escape(subtitle)}</p>' if subtitle else ""
 
     return f"""
@@ -1101,6 +1177,7 @@ def _render_moment_card(
       <div><span>Scores</span><strong>{escape(item.best_score)} to {escape(item.played_score)}</strong></div>
     </div>
     <p class="note">{escape(item.note)}</p>
+    <ul class="motif-list">{motif_items}</ul>
     <ul class="candidate-list">{candidate_items}</ul>
   </div>
 </article>
@@ -1131,6 +1208,134 @@ def _severity_class(severity: str) -> str:
 
 def _score_to_numeric(score: chess.engine.Score) -> int:
     return score.score(mate_score=MATE_SCORE)
+
+
+def _weighted_average_cp_loss(reports: list[GameReport]) -> float:
+    total_moves = sum(report.total_player_moves for report in reports)
+    if total_moves == 0:
+        return 0.0
+    total_loss = sum(
+        report.average_cp_loss * report.total_player_moves
+        for report in reports
+    )
+    return total_loss / total_moves
+
+
+def _detect_tactical_motifs(
+    board: chess.Board,
+    played_move: chess.Move,
+    best_move: chess.Move,
+) -> list[str]:
+    motifs: list[str] = []
+
+    if board.gives_check(best_move):
+        motifs.append("Missed check")
+    if board.is_capture(best_move) and not board.is_capture(played_move):
+        motifs.append("Missed capture")
+    if _creates_fork(board, best_move):
+        motifs.append("Missed fork")
+    if _wins_higher_value_material(board, best_move):
+        motifs.append("Missed material tactic")
+    if _targets_king_zone(board, best_move):
+        motifs.append("King safety tactic")
+    if _creates_promotion_threat(board, best_move):
+        motifs.append("Promotion or passed-pawn tactic")
+    if _best_move_attacks_hanging_piece(board, best_move):
+        motifs.append("Loose piece tactic")
+
+    if not motifs:
+        motifs.append("Calculation / candidate move selection")
+
+    return motifs
+
+
+def _motif_counts(mistakes: list[Mistake]) -> list[tuple[str, int]]:
+    return Counter(
+        motif
+        for mistake in mistakes
+        for motif in mistake.motifs
+    ).most_common(8)
+
+
+def _creates_fork(board: chess.Board, move: chess.Move) -> bool:
+    next_board = board.copy(stack=False)
+    next_board.push(move)
+    moved_piece = next_board.piece_at(move.to_square)
+    if moved_piece is None:
+        return False
+
+    attacked_targets = 0
+    for square in next_board.attacks(move.to_square):
+        target = next_board.piece_at(square)
+        if target is None or target.color == moved_piece.color:
+            continue
+        if target.piece_type == chess.KING or _piece_value(target.piece_type) >= 3:
+            attacked_targets += 1
+
+    return attacked_targets >= 2
+
+
+def _wins_higher_value_material(board: chess.Board, move: chess.Move) -> bool:
+    mover = board.piece_at(move.from_square)
+    target = board.piece_at(move.to_square)
+    if mover is None or target is None:
+        return False
+    return _piece_value(target.piece_type) > _piece_value(mover.piece_type)
+
+
+def _targets_king_zone(board: chess.Board, move: chess.Move) -> bool:
+    next_board = board.copy(stack=False)
+    next_board.push(move)
+    mover = next_board.piece_at(move.to_square)
+    if mover is None:
+        return False
+
+    enemy_king = next_board.king(not mover.color)
+    if enemy_king is None:
+        return False
+
+    king_zone = set(next_board.attacks(enemy_king)) | {enemy_king}
+    attacked_squares = set(next_board.attacks(move.to_square))
+    return bool(king_zone & attacked_squares)
+
+
+def _creates_promotion_threat(board: chess.Board, move: chess.Move) -> bool:
+    next_board = board.copy(stack=False)
+    next_board.push(move)
+    pawn = next_board.piece_at(move.to_square)
+    if pawn is None or pawn.piece_type != chess.PAWN:
+        return False
+
+    rank = chess.square_rank(move.to_square)
+    return rank in (1, 6) or move.promotion is not None
+
+
+def _best_move_attacks_hanging_piece(board: chess.Board, move: chess.Move) -> bool:
+    next_board = board.copy(stack=False)
+    next_board.push(move)
+    mover = next_board.piece_at(move.to_square)
+    if mover is None:
+        return False
+
+    for square in next_board.attacks(move.to_square):
+        target = next_board.piece_at(square)
+        if target is None or target.color == mover.color:
+            continue
+        defenders = next_board.attackers(target.color, square)
+        if not defenders and _piece_value(target.piece_type) >= 3:
+            return True
+    return False
+
+
+def _piece_value(piece_type: chess.PieceType) -> int:
+    return {
+        chess.PAWN: 1,
+        chess.KNIGHT: 3,
+        chess.BISHOP: 3,
+        chess.ROOK: 5,
+        chess.QUEEN: 9,
+        chess.KING: 100,
+    }[piece_type]
 
 
 def _format_score(score: chess.engine.Score) -> str:
