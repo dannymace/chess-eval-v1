@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
 from .analyzer import (
+    GameReport,
+    TrendReport,
     analyze_latest_game,
     build_trend_report,
     render_html_report,
@@ -66,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--html",
-        help="Write a standalone HTML report to this path",
+        help="Override the automatic standalone HTML report path",
     )
     return parser
 
@@ -91,8 +94,10 @@ def main() -> int:
                 max_mistakes=args.max_mistakes,
             )
             print(render_report(report))
-            if args.html:
-                _write_html(args.html, render_html_report(report))
+            _write_html(
+                _resolve_html_path(args.html, _single_report_filename(report)),
+                render_html_report(report),
+            )
         else:
             recent_games = fetch_recent_games(args.username, args.last)
             reports = [
@@ -109,8 +114,13 @@ def main() -> int:
             ]
             trend_report = build_trend_report(args.username, reports)
             print(render_trend_report(trend_report))
-            if args.html:
-                _write_html(args.html, render_html_trend_report(trend_report))
+            _write_html(
+                _resolve_html_path(
+                    args.html,
+                    _trend_report_filename(trend_report, args.last),
+                ),
+                render_html_trend_report(trend_report),
+            )
     except ChessComError as exc:
         print(f"Chess.com error: {exc}", file=sys.stderr)
         return 2
@@ -127,7 +137,35 @@ def main() -> int:
     return 0
 
 
-def _write_html(path: str, html: str) -> None:
+def _resolve_html_path(path: str | None, filename: str) -> Path:
+    if not path:
+        return Path("reports") / filename
+
+    output_path = Path(path)
+    if path.endswith(("/", "\\")) or output_path.suffix.lower() != ".html":
+        return output_path / filename
+    return output_path
+
+
+def _single_report_filename(report: GameReport) -> str:
+    parts = [report.game_date, _safe_file_part(report.opponent)]
+    if report.game_id:
+        parts.append(_safe_file_part(report.game_id))
+    return "_".join(part for part in parts if part) + ".html"
+
+
+def _trend_report_filename(report: TrendReport, requested_count: int) -> str:
+    report_date = report.games[0].game_date
+    username = _safe_file_part(report.username)
+    return f"{report_date}_{username}_last-{requested_count}.html"
+
+
+def _safe_file_part(value: str) -> str:
+    safe_value = re.sub(r"[^a-zA-Z0-9]+", "-", value.strip()).strip("-").lower()
+    return safe_value or "unknown"
+
+
+def _write_html(path: Path, html: str) -> None:
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(html, encoding="utf-8")

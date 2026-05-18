@@ -50,12 +50,15 @@ class Mistake:
 @dataclass(slots=True)
 class GameReport:
     username: str
+    opponent: str
     color: str
     result: str
     opening: str
     time_class: str
     url: str
     end_time: str
+    game_date: str
+    game_id: str
     player_rating: int | None
     total_player_moves: int
     accuracy_rating: float
@@ -109,11 +112,13 @@ def analyze_latest_game(
     if white_name.lower() == username.lower():
         player_color = chess.WHITE
         color_name = "White"
+        opponent = black_name
         player_result = latest_game.game.get("white", {}).get("result", "")
         player_rating = _parse_rating(game.headers.get("WhiteElo", ""))
     elif black_name.lower() == username.lower():
         player_color = chess.BLACK
         color_name = "Black"
+        opponent = white_name
         player_result = latest_game.game.get("black", {}).get("result", "")
         player_rating = _parse_rating(game.headers.get("BlackElo", ""))
     else:
@@ -236,15 +241,20 @@ def analyze_latest_game(
     )
     top_mistakes = sorted_mistakes[:max_mistakes]
     accuracy_rating = _accuracy_rating(cp_losses)
+    end_timestamp = int(latest_game.game["end_time"])
+    game_url = str(latest_game.game.get("url", ""))
 
     return GameReport(
         username=username,
+        opponent=opponent,
         color=color_name,
         result=_normalize_result(player_result),
         opening=_format_opening(game.headers),
         time_class=str(latest_game.game.get("time_class", "unknown")),
-        url=str(latest_game.game.get("url", "")),
-        end_time=_format_timestamp(int(latest_game.game["end_time"])),
+        url=game_url,
+        end_time=_format_timestamp(end_timestamp),
+        game_date=_format_date(end_timestamp),
+        game_id=_game_id(game_url),
         player_rating=player_rating,
         total_player_moves=player_moves,
         accuracy_rating=accuracy_rating,
@@ -302,6 +312,7 @@ def render_report(report: GameReport) -> str:
         f"# Chess Eval V1: {report.username}",
         "",
         f"- Color: {report.color}",
+        f"- Opponent: {report.opponent}",
         f"- Result: {report.result}",
         f"- Opening: {report.opening}",
         f"- Time class: {report.time_class}",
@@ -403,6 +414,7 @@ def render_trend_report(report: TrendReport) -> str:
     for game in report.games:
         lines.append(
             f"- {game.end_time}: {game.color} {game.result}, "
+            f"vs {game.opponent}, "
             f"{game.accuracy_rating:.1f}/100, "
             f"I/Mistake/Miss/B {game.inaccuracies}/{game.mistakes}/{game.misses}/{game.blunders}, "
             f"{game.opening}"
@@ -422,6 +434,7 @@ def render_html_report(report: GameReport) -> str:
 
     meta_rows = [
         ("Color", report.color),
+        ("Opponent", report.opponent),
         ("Result", report.result),
         ("Opening", report.opening),
         ("Time class", report.time_class),
@@ -584,6 +597,7 @@ def render_html_trend_report(report: TrendReport) -> str:
           <tr>
             <th>Ended</th>
             <th>Color</th>
+            <th>Opponent</th>
             <th>Result</th>
             <th>Accuracy</th>
             <th>Issues</th>
@@ -1108,6 +1122,7 @@ def _render_recent_game_row(game: GameReport) -> str:
 <tr>
   <td>{escape(game.end_time)}</td>
   <td>{escape(game.color)}</td>
+  <td>{escape(game.opponent)}</td>
   <td><strong>{escape(game.result)}</strong></td>
   <td><strong>{game.accuracy_rating:.1f}</strong><div class="table-muted">{escape(game.accuracy_label)}</div></td>
   <td>{escape(issues)}</td>
@@ -1605,6 +1620,14 @@ def _format_timestamp(timestamp: int) -> str:
     return datetime.fromtimestamp(timestamp, tz=UTC).astimezone().strftime(
         "%Y-%m-%d %H:%M:%S %Z"
     )
+
+
+def _format_date(timestamp: int) -> str:
+    return datetime.fromtimestamp(timestamp, tz=UTC).astimezone().strftime("%Y-%m-%d")
+
+
+def _game_id(url: str) -> str:
+    return url.rstrip("/").split("/")[-1] if url else ""
 
 
 def _build_takeaway(top_mistakes: list[Mistake]) -> str:

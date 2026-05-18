@@ -19,6 +19,23 @@ docker build -t chess-eval-v1 .
 docker run --rm chess-eval-v1 hikaru
 ```
 
+The command always creates an HTML report. To keep that file when running with Docker, mount the default report directory:
+
+```bash
+mkdir -p reports
+docker run --rm -v "$PWD/reports:/app/reports" chess-eval-v1 hikaru
+```
+
+PowerShell from a WSL path:
+
+```powershell
+$out = Join-Path (Get-Location).ProviderPath 'reports'
+New-Item -ItemType Directory -Force -Path $out | Out-Null
+docker run --rm -v "${out}:/app/reports" chess-eval-v1 hikaru
+```
+
+Single-game reports are named from the game date, opponent, and Chess.com game id, for example `2026-05-04_sakke1989_943998639.html`.
+
 Tune the analysis depth or engine settings:
 
 ```bash
@@ -28,13 +45,14 @@ docker run --rm chess-eval-v1 hikaru --depth 12 --threads 4 --hash-mb 256 --max-
 Analyze multiple recent games and surface recurring lessons:
 
 ```bash
-docker run --rm chess-eval-v1 hikaru --last 20
+docker run --rm -v "$PWD/reports:/app/reports" chess-eval-v1 hikaru --last 20
 ```
 
-Generate a standalone HTML report with board diagrams:
+Trend reports are named from the latest game date and username, for example `2026-05-04_hikaru_last-20.html`.
+
+Override the HTML output path:
 
 ```bash
-mkdir -p reports
 docker run --rm -v "$PWD/reports:/reports" chess-eval-v1 hikaru --html /reports/latest.html
 ```
 
@@ -49,7 +67,7 @@ docker run --rm -v "$PWD/reports:/reports" chess-eval-v1 hikaru --last 20 --html
 - Chess.com PubAPI is public and read-only. Recent games can lag because the API is cached upstream.
 - V1 focuses on your moves only, not your opponent's moves.
 - `--last N` analyzes the most recent finished public games and produces a trend report instead of a full per-game report.
-- `--html PATH` writes a standalone visual report. Single-game reports include chessboards for the biggest moments; trend reports use summary tables.
+- HTML is created on every run. `--html PATH` overrides the automatic path. Single-game reports include chessboards for the biggest moments; trend reports use summary tables.
 - Opening names are read from Chess.com PGN headers when available. If Chess.com only provides an ECO code and URL, the app converts the URL slug into a readable name.
 - ACPL is average centipawn loss across the analyzed player's moves. In trend reports it is weighted by player move count across games.
 - Accuracy is a `0-100` estimate derived from per-move centipawn loss. It is useful for comparing your own games, not as an exact Chess.com accuracy clone.
