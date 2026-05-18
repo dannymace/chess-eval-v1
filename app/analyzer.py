@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import io
 import os
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from math import exp
 from statistics import mean
+from urllib.parse import unquote, urlparse
 
 import chess
 import chess.engine
@@ -183,7 +185,7 @@ def analyze_latest_game(
         username=username,
         color=color_name,
         result=_normalize_result(player_result),
-        opening=game.headers.get("Opening") or game.headers.get("ECO") or "Unknown",
+        opening=_format_opening(game.headers),
         time_class=str(latest_game.game.get("time_class", "unknown")),
         url=str(latest_game.game.get("url", "")),
         end_time=_format_timestamp(int(latest_game.game["end_time"])),
@@ -292,6 +294,91 @@ def _resolve_threads(threads: int) -> int:
     if threads > 0:
         return threads
     return os.cpu_count() or 1
+
+
+def _format_opening(headers: chess.pgn.Headers) -> str:
+    eco = headers.get("ECO", "").strip()
+    opening = headers.get("Opening", "").strip()
+    if opening and not _is_eco_code(opening):
+        return _append_eco(opening, eco)
+
+    eco_url_name = _opening_name_from_eco_url(headers.get("ECOUrl", ""))
+    if eco_url_name:
+        return _append_eco(eco_url_name, eco)
+
+    return f"ECO {eco}" if eco else "Unknown"
+
+
+def _append_eco(opening: str, eco: str) -> str:
+    if not eco or eco in opening:
+        return opening
+    return f"{opening} ({eco})"
+
+
+def _is_eco_code(value: str) -> bool:
+    return bool(re.fullmatch(r"[A-E]\d{2}", value.strip(), flags=re.IGNORECASE))
+
+
+def _opening_name_from_eco_url(eco_url: str) -> str:
+    if not eco_url:
+        return ""
+
+    slug = unquote(urlparse(eco_url).path.rstrip("/").split("/")[-1])
+    if not slug:
+        return ""
+
+    tokens = [token for token in slug.split("-") if token]
+    name_tokens: list[str] = []
+    for token in tokens:
+        if re.match(r"^\d+\.", token):
+            break
+        name_tokens.append(token)
+
+    words = [_normalize_opening_word(token) for token in name_tokens]
+    segments = _opening_segments(words)
+    if not segments:
+        return ""
+    if len(segments) == 1:
+        return segments[0]
+    return f"{segments[0]}: {', '.join(segments[1:])}"
+
+
+def _normalize_opening_word(word: str) -> str:
+    replacements = {
+        "Queens": "Queen's",
+        "Kings": "King's",
+    }
+    return replacements.get(word, word)
+
+
+def _opening_segments(words: list[str]) -> list[str]:
+    segment_enders = {
+        "Attack",
+        "Countergambit",
+        "Defense",
+        "Defence",
+        "Gambit",
+        "Game",
+        "Opening",
+        "System",
+        "Variation",
+    }
+    segments: list[str] = []
+    current: list[str] = []
+
+    for word in words:
+        current.append(word)
+        if word in segment_enders:
+            segments.append(" ".join(current))
+            current = []
+
+    if current:
+        if segments:
+            segments[-1] = f"{segments[-1]} {' '.join(current)}"
+        else:
+            segments.append(" ".join(current))
+
+    return segments
 
 
 def _accuracy_rating(cp_losses: list[int]) -> float:
