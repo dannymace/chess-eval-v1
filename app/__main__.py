@@ -29,8 +29,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--threads",
         type=int,
-        default=2,
-        help="Number of Stockfish threads",
+        default=0,
+        help="Number of Stockfish threads; 0 uses all CPUs visible to the container",
     )
     parser.add_argument(
         "--hash-mb",

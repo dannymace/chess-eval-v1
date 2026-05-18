@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from math import exp
@@ -93,11 +94,12 @@ def analyze_latest_game(
     mistakes: list[Mistake] = []
     cp_losses: list[int] = []
     player_moves = 0
+    stockfish_threads = _resolve_threads(threads)
 
     with chess.engine.SimpleEngine.popen_uci(engine_path) as engine:
         engine.configure(
             {
-                "Threads": threads,
+                "Threads": stockfish_threads,
                 "Hash": hash_mb,
                 "UCI_ShowWDL": True,
             }
@@ -282,6 +284,14 @@ def _classify_severity(
     if cp_loss >= 20:
         return "Inaccuracy"
     return None
+
+
+def _resolve_threads(threads: int) -> int:
+    if threads < 0:
+        raise ValueError("--threads must be 0 or greater.")
+    if threads > 0:
+        return threads
+    return os.cpu_count() or 1
 
 
 def _accuracy_rating(cp_losses: list[int]) -> float:
