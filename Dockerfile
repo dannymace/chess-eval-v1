@@ -10,16 +10,20 @@ LABEL org.opencontainers.image.title="chess-eval-v1" \
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV STOCKFISH_PATH=/usr/games/stockfish
+ENV CHESS_EVAL_REPORT_DIR=/reports
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends stockfish \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+RUN mkdir -p /reports
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
+
+VOLUME ["/reports"]
 
 ENTRYPOINT ["python", "-m", "app"]

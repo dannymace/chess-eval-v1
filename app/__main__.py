@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from pathlib import Path
@@ -17,6 +18,10 @@ from .analyzer import (
     render_trend_report,
 )
 from .chesscom import ChessComError, fetch_latest_game, fetch_recent_games
+
+
+REPORT_DIR_ENV = "CHESS_EVAL_REPORT_DIR"
+DEFAULT_REPORT_DIR = "reports"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -145,7 +150,7 @@ def main() -> int:
 
 def _resolve_html_path(path: str | None, filename: str) -> Path:
     if not path:
-        return Path("reports") / filename
+        return Path(os.environ.get(REPORT_DIR_ENV, DEFAULT_REPORT_DIR)) / filename
 
     output_path = Path(path)
     if path.endswith(("/", "\\")) or output_path.suffix.lower() != ".html":

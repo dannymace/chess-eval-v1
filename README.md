@@ -23,23 +23,41 @@ docker load -i chess-eval-v1-1.0.0-image.tar.gz
 
 ## Run
 
-```bash
-docker run --rm chess-eval-v1 hikaru
+The easiest path is to use the included wrapper for your platform. The wrappers do not rely on bind mounts; they run the container, copy `/reports` back to this repo's `reports/` folder, and remove the container.
+
+Windows PowerShell:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\run.ps1 hikaru
 ```
 
-The command always creates an HTML report. To keep that file when running with Docker, mount the default report directory:
+Windows `cmd.exe`:
+
+```cmd
+run.cmd hikaru
+```
+
+WSL, Linux, and macOS:
+
+```bash
+./run.sh hikaru
+```
+
+You do not need to pass `--html` or remember Docker mount syntax.
+
+If you run raw Docker instead of a wrapper, mount `/reports`; Docker cannot copy files back to the host by itself:
 
 ```bash
 mkdir -p reports
-docker run --rm -v "$PWD/reports:/app/reports" chess-eval-v1 hikaru
+docker run --rm -v "$PWD/reports:/reports" chess-eval-v1 hikaru
 ```
 
-PowerShell from a WSL path:
+PowerShell raw Docker from a WSL path:
 
 ```powershell
 $out = Join-Path (Get-Location).ProviderPath 'reports'
 New-Item -ItemType Directory -Force -Path $out | Out-Null
-docker run --rm -v "${out}:/app/reports" chess-eval-v1 hikaru
+docker run --rm -v "${out}:/reports" chess-eval-v1 hikaru
 ```
 
 Single-game reports are named from the game date, opponent, and Chess.com game id, for example `2026-05-04_sakke1989_943998639.html`.
@@ -47,13 +65,13 @@ Single-game reports are named from the game date, opponent, and Chess.com game i
 Tune the analysis depth or engine settings:
 
 ```bash
-docker run --rm chess-eval-v1 hikaru --depth 12 --threads 4 --hash-mb 256 --max-mistakes 5
+./run.sh hikaru --depth 12 --threads 4 --hash-mb 256 --max-mistakes 5
 ```
 
 Analyze multiple recent games and surface recurring lessons:
 
 ```bash
-docker run --rm -v "$PWD/reports:/app/reports" chess-eval-v1 hikaru --last 20
+./run.sh hikaru --last 20
 ```
 
 Trend reports are named from the latest game date and username, for example `2026-05-04_hikaru_last-20.html`.
