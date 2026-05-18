@@ -5,6 +5,7 @@ import re
 import sys
 from pathlib import Path
 
+from . import __version__
 from .analyzer import (
     GameReport,
     TrendReport,
@@ -70,6 +71,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--html",
         help="Override the automatic standalone HTML report path",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"chess-eval-v1 {__version__}",
     )
     return parser
 

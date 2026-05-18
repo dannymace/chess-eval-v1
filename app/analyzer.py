@@ -20,6 +20,7 @@ from .chesscom import LatestGame
 
 
 MATE_SCORE = 100_000
+GENERIC_TACTIC_MOTIF = "Calculation / candidate move selection"
 
 
 @dataclass(slots=True)
@@ -443,6 +444,14 @@ def render_html_report(report: GameReport) -> str:
     if report.player_rating is not None:
         meta_rows.append(("Player rating", str(report.player_rating)))
     motif_rows = _rank_rows(report.tactical_patterns)
+    tactic_cards = "\n".join(
+        _render_moment_card(item, report.color)
+        for item in _detected_tactic_moves(report.flagged_moves)
+    )
+    if not tactic_cards:
+        tactic_cards = (
+            '<section class="empty">No concrete missed tactic was detected beyond general calculation drift.</section>'
+        )
 
     return _html_document(
         title=f"Chess Eval V1: {report.username}",
@@ -487,9 +496,11 @@ def render_html_report(report: GameReport) -> str:
   <section class="panel">
     <div class="section-head">
       <p class="eyebrow">Tactics</p>
-      <h2>Detected Patterns</h2>
+      <h2>Detected Tactics</h2>
     </div>
+    <p class="section-note">Each board is the position before your move. The green arrow is Stockfish's missed tactic; the red arrow is the move you played.</p>
     <ul class="rank-list">{motif_rows}</ul>
+    <div class="tactic-grid">{tactic_cards}</div>
   </section>
 </main>
 """,
@@ -535,6 +546,22 @@ def render_html_trend_report(report: TrendReport) -> str:
     )
     motif_rows = _rank_rows(report.tactical_patterns)
     game_rows = "\n".join(_render_recent_game_row(game) for game in report.games)
+    tactic_cards = "\n".join(
+        _render_moment_card(
+            item,
+            game.color,
+            subtitle=(
+                f"{game.end_time} vs {game.opponent}. "
+                f"{game.color} {game.result}. {game.opening}."
+            ),
+        )
+        for game in report.games
+        for item in _detected_tactic_moves(game.flagged_moves)
+    )
+    if not tactic_cards:
+        tactic_cards = (
+            '<section class="empty">No concrete missed tactic was detected beyond general calculation drift.</section>'
+        )
 
     return _html_document(
         title=f"Chess Eval Trend: {report.username}",
@@ -583,7 +610,9 @@ def render_html_trend_report(report: TrendReport) -> str:
       <p class="eyebrow">Tactics</p>
       <h2>Recurring Tactical Patterns</h2>
     </div>
+    <p class="section-note">Each board below shows the position before the missed tactic. The green arrow is the missed move; the red arrow is the move played.</p>
     <ul class="rank-list">{motif_rows}</ul>
+    <div class="tactic-grid">{tactic_cards}</div>
   </section>
 
   <section class="panel">
@@ -621,10 +650,10 @@ def render_html_trend_report(report: TrendReport) -> str:
             <th>Game</th>
             <th>Move</th>
             <th>Type</th>
-      <th>Played</th>
-      <th>Best</th>
-      <th>Patterns</th>
-      <th>Expected loss</th>
+            <th>Played</th>
+            <th>Best</th>
+            <th>Patterns</th>
+            <th>Expected loss</th>
           </tr>
         </thead>
         <tbody>{top_issue_rows}</tbody>
@@ -828,6 +857,13 @@ def _html_document(title: str, body: str) -> str:
       font-size: 0.9rem;
     }}
 
+    .section-note {{
+      max-width: 780px;
+      margin: -4px 0 18px;
+      color: var(--muted);
+      font-size: 0.98rem;
+    }}
+
     .dot {{
       display: inline-block;
       width: 11px;
@@ -844,6 +880,13 @@ def _html_document(title: str, body: str) -> str:
       display: grid;
       grid-template-columns: 1fr;
       gap: 18px;
+    }}
+
+    .tactic-grid {{
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 18px;
+      margin-top: 18px;
     }}
 
     .moment-card {{
@@ -914,6 +957,25 @@ def _html_document(title: str, body: str) -> str:
 
     .move-pill strong {{
       color: var(--ink);
+    }}
+
+    .tactic-callout {{
+      margin: 12px 0 0;
+      border-left: 4px solid var(--green);
+      padding: 10px 12px;
+      background: rgba(47, 138, 75, 0.08);
+      color: var(--ink);
+      font-size: 1rem;
+    }}
+
+    .tactic-callout span {{
+      display: block;
+      color: var(--green);
+      font-family: "Trebuchet MS", Verdana, sans-serif;
+      font-size: 0.74rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
     }}
 
     .detail-grid {{
@@ -1174,6 +1236,7 @@ def _render_moment_card(
         f"<li>{escape(motif)}</li>" for motif in item.motifs
     )
     subtitle_html = f'<p class="subtitle">{escape(subtitle)}</p>' if subtitle else ""
+    missed_tactic = _missed_tactic_summary(item)
 
     return f"""
 <article class="moment-card">
@@ -1186,6 +1249,7 @@ def _render_moment_card(
       <div class="move-pill">Played <strong>{escape(item.played)}</strong></div>
       <div class="move-pill">Best <strong>{escape(item.best)}</strong></div>
     </div>
+    <p class="tactic-callout"><span>Missed tactic</span>{escape(missed_tactic)}</p>
     <div class="detail-grid">
       <div><span>Expected loss</span><strong>{item.expected_points_loss:.2f}</strong></div>
       <div><span>Eval swing</span><strong>{item.cp_loss} cp</strong></div>
@@ -1215,6 +1279,21 @@ def _board_svg(item: Mistake, color: str) -> str:
         orientation=orientation,
         size=420,
     )
+
+
+def _detected_tactic_moves(moves: list[Mistake]) -> list[Mistake]:
+    return [
+        move
+        for move in moves
+        if any(motif != GENERIC_TACTIC_MOTIF for motif in move.motifs)
+    ]
+
+
+def _missed_tactic_summary(item: Mistake) -> str:
+    motifs = [motif for motif in item.motifs if motif != GENERIC_TACTIC_MOTIF]
+    if not motifs:
+        motifs = item.motifs
+    return f"{item.best} was available: {', '.join(motifs)}."
 
 
 def _severity_class(severity: str) -> str:
@@ -1259,7 +1338,7 @@ def _detect_tactical_motifs(
         motifs.append("Loose piece tactic")
 
     if not motifs:
-        motifs.append("Calculation / candidate move selection")
+        motifs.append(GENERIC_TACTIC_MOTIF)
 
     return motifs
 

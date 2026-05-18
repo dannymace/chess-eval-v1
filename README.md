@@ -7,10 +7,18 @@ Minimal Dockerized CLI that:
 - analyzes that game locally with Stockfish
 - prints a short coaching-style report with an opening name, accuracy rating, Chess.com-style move categories, and tactical pattern hints
 
+Current release: `1.0.0`
+
 ## Build
 
 ```bash
 docker build -t chess-eval-v1 .
+```
+
+Or pull the release image:
+
+```bash
+docker pull ghcr.io/dannymace/chess-eval-v1:1.0
 ```
 
 ## Run
@@ -56,10 +64,16 @@ Override the HTML output path:
 docker run --rm -v "$PWD/reports:/reports" chess-eval-v1 hikaru --html /reports/latest.html
 ```
 
-HTML also works with trend reports. Trend HTML focuses on summary tables and recurring lessons rather than board diagrams:
+HTML also works with trend reports. Trend HTML includes summary tables, recurring lessons, and board diagrams for detected tactical misses:
 
 ```bash
 docker run --rm -v "$PWD/reports:/reports" chess-eval-v1 hikaru --last 20 --html /reports/trend.html
+```
+
+Check the installed version:
+
+```bash
+docker run --rm chess-eval-v1 --version
 ```
 
 ## Notes
@@ -67,7 +81,7 @@ docker run --rm -v "$PWD/reports:/reports" chess-eval-v1 hikaru --last 20 --html
 - Chess.com PubAPI is public and read-only. Recent games can lag because the API is cached upstream.
 - V1 focuses on your moves only, not your opponent's moves.
 - `--last N` analyzes the most recent finished public games and produces a trend report instead of a full per-game report.
-- HTML is created on every run. `--html PATH` overrides the automatic path. Single-game reports include chessboards for the biggest moments; trend reports use summary tables.
+- HTML is created on every run. `--html PATH` overrides the automatic path. Single-game reports include chessboards for the biggest moments and detected tactics; trend reports include summary tables plus board examples for tactical misses.
 - Opening names are read from Chess.com PGN headers when available. If Chess.com only provides an ECO code and URL, the app converts the URL slug into a readable name.
 - ACPL is average centipawn loss across the analyzed player's moves. In trend reports it is weighted by player move count across games.
 - Accuracy is a `0-100` estimate derived from per-move centipawn loss. It is useful for comparing your own games, not as an exact Chess.com accuracy clone.
