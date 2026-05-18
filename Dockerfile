@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 
-ARG VERSION=1.0.0
+ARG VERSION=1.0.1
 
 LABEL org.opencontainers.image.title="chess-eval-v1" \
       org.opencontainers.image.description="Dockerized Chess.com game review with local Stockfish analysis" \

@@ -7,7 +7,7 @@ Minimal Dockerized CLI that:
 - analyzes that game locally with Stockfish
 - prints a short coaching-style report with an opening name, accuracy rating, Chess.com-style move categories, and tactical pattern hints
 
-Current release: `1.0.0`
+Current release: `1.0.1`
 
 ## Build
 
@@ -18,7 +18,7 @@ docker build -t chess-eval-v1 .
 Or download the release image tarball from the GitHub release and load it:
 
 ```bash
-docker load -i chess-eval-v1-1.0.0-image.tar.gz
+docker load -i chess-eval-v1-1.0.1-image.tar.gz
 ```
 
 ## Run
