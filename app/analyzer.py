@@ -452,7 +452,7 @@ def render_html_report(report: GameReport) -> str:
 
 
 def render_html_trend_report(report: TrendReport) -> str:
-    top_moments = sorted(
+    top_issues = sorted(
         (
             (game, item)
             for game in report.games
@@ -465,12 +465,13 @@ def render_html_trend_report(report: TrendReport) -> str:
         ),
         reverse=True,
     )[:8]
-    moment_cards = "\n".join(
-        _render_moment_card(item, game.color, subtitle=f"{game.end_time} - {game.opening}")
-        for game, item in top_moments
+    top_issue_rows = "\n".join(
+        _render_top_issue_row(game, item) for game, item in top_issues
     )
-    if not moment_cards:
-        moment_cards = '<section class="empty">No major moments were flagged.</section>'
+    if not top_issue_rows:
+        top_issue_rows = (
+            '<tr><td colspan="6">No major moments were flagged.</td></tr>'
+        )
 
     opening_rows = "\n".join(
         f"<li><span>{escape(opening)}</span><strong>{count}</strong></li>"
@@ -487,6 +488,7 @@ def render_html_trend_report(report: TrendReport) -> str:
     lesson_rows = "\n".join(
         f"<li>{escape(lesson)}</li>" for lesson in report.recurring_lessons
     )
+    game_rows = "\n".join(_render_recent_game_row(game) for game in report.games)
 
     return _html_document(
         title=f"Chess Eval Trend: {report.username}",
@@ -532,14 +534,46 @@ def render_html_trend_report(report: TrendReport) -> str:
 
   <section class="panel">
     <div class="section-head">
+      <p class="eyebrow">Games</p>
+      <h2>Recent Game Summary</h2>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Ended</th>
+            <th>Color</th>
+            <th>Result</th>
+            <th>Accuracy</th>
+            <th>Issues</th>
+            <th>Opening</th>
+          </tr>
+        </thead>
+        <tbody>{game_rows}</tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="section-head">
       <p class="eyebrow">Review</p>
-      <h2>Biggest Moments</h2>
+      <h2>Highest Impact Moves</h2>
     </div>
-    <div class="legend">
-      <span><i class="dot best"></i> Best move</span>
-      <span><i class="dot played"></i> Played move</span>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Game</th>
+            <th>Move</th>
+            <th>Type</th>
+            <th>Played</th>
+            <th>Best</th>
+            <th>Expected loss</th>
+          </tr>
+        </thead>
+        <tbody>{top_issue_rows}</tbody>
+      </table>
     </div>
-    <div class="moments">{moment_cards}</div>
   </section>
 </main>
 """,
@@ -904,6 +938,43 @@ def _html_document(title: str, body: str) -> str:
       margin: 0 0 16px;
     }}
 
+    .table-wrap {{
+      width: 100%;
+      overflow-x: auto;
+    }}
+
+    table {{
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 760px;
+    }}
+
+    th {{
+      color: var(--muted);
+      font-family: "Trebuchet MS", Verdana, sans-serif;
+      font-size: 0.76rem;
+      font-weight: 700;
+      text-align: left;
+      text-transform: uppercase;
+    }}
+
+    th, td {{
+      border-bottom: 1px solid var(--line);
+      padding: 12px 10px;
+      vertical-align: top;
+    }}
+
+    tbody tr:last-child td {{ border-bottom: 0; }}
+
+    td strong {{
+      font-weight: 700;
+    }}
+
+    .table-muted {{
+      color: var(--muted);
+      font-size: 0.9rem;
+    }}
+
     .empty {{
       padding: 24px;
       border: 1px dashed var(--line);
@@ -955,6 +1026,36 @@ def _metric_card(label: str, value: str, hint: str) -> str:
         f'<span class="hint">{escape(hint)}</span>'
         "</article>"
     )
+
+
+def _render_recent_game_row(game: GameReport) -> str:
+    issues = (
+        f"I {game.inaccuracies} / M {game.mistakes} / "
+        f"Miss {game.misses} / B {game.blunders}"
+    )
+    return f"""
+<tr>
+  <td>{escape(game.end_time)}</td>
+  <td>{escape(game.color)}</td>
+  <td><strong>{escape(game.result)}</strong></td>
+  <td><strong>{game.accuracy_rating:.1f}</strong><div class="table-muted">{escape(game.accuracy_label)}</div></td>
+  <td>{escape(issues)}</td>
+  <td>{escape(game.opening)}</td>
+</tr>
+"""
+
+
+def _render_top_issue_row(game: GameReport, item: Mistake) -> str:
+    return f"""
+<tr>
+  <td>{escape(game.end_time)}<div class="table-muted">{escape(game.opening)}</div></td>
+  <td><strong>{escape(item.move_label)}</strong><div class="table-muted">{escape(item.phase)}</div></td>
+  <td><span class="badge {_severity_class(item.severity)}">{escape(item.severity)}</span></td>
+  <td>{escape(item.played)}</td>
+  <td>{escape(item.best)}</td>
+  <td><strong>{item.expected_points_loss:.2f}</strong><div class="table-muted">{item.cp_loss} cp</div></td>
+</tr>
+"""
 
 
 def _render_meta_rows(rows: list[tuple[str, str]]) -> str:

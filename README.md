@@ -38,7 +38,7 @@ mkdir -p reports
 docker run --rm -v "$PWD/reports:/reports" chess-eval-v1 hikaru --html /reports/latest.html
 ```
 
-HTML also works with trend reports:
+HTML also works with trend reports. Trend HTML focuses on summary tables and recurring lessons rather than board diagrams:
 
 ```bash
 docker run --rm -v "$PWD/reports:/reports" chess-eval-v1 hikaru --last 20 --html /reports/trend.html
@@ -49,7 +49,7 @@ docker run --rm -v "$PWD/reports:/reports" chess-eval-v1 hikaru --last 20 --html
 - Chess.com PubAPI is public and read-only. Recent games can lag because the API is cached upstream.
 - V1 focuses on your moves only, not your opponent's moves.
 - `--last N` analyzes the most recent finished public games and produces a trend report instead of a full per-game report.
-- `--html PATH` writes a standalone visual report with chessboards for the biggest moments.
+- `--html PATH` writes a standalone visual report. Single-game reports include chessboards for the biggest moments; trend reports use summary tables.
 - Opening names are read from Chess.com PGN headers when available. If Chess.com only provides an ECO code and URL, the app converts the URL slug into a readable name.
 - Accuracy is a `0-100` estimate derived from per-move centipawn loss. It is useful for comparing your own games, not as an exact Chess.com accuracy clone.
 - Move categories use an approximate expected-points model so missed winning chances are separated as `Miss` instead of being treated as raw centipawn blunders.
