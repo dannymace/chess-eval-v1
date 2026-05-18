@@ -6,6 +6,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from html import escape
 from math import exp
 from statistics import mean
 from urllib.parse import unquote, urlparse
@@ -13,6 +14,7 @@ from urllib.parse import unquote, urlparse
 import chess
 import chess.engine
 import chess.pgn
+import chess.svg
 
 from .chesscom import LatestGame
 
@@ -31,7 +33,10 @@ class Mistake:
     move_label: str
     phase: str
     played: str
+    played_uci: str
     best: str
+    best_uci: str
+    fen: str
     best_score: str
     played_score: str
     cp_loss: int
@@ -185,7 +190,10 @@ def analyze_latest_game(
                             move_label=_move_label(board, san),
                             phase=_phase_name(board),
                             played=san,
+                            played_uci=move.uci(),
                             best=best_san,
+                            best_uci=best_move.uci(),
+                            fen=board.fen(),
                             best_score=_format_score(best_score),
                             played_score=_format_score(played_score),
                             cp_loss=cp_loss,
@@ -378,6 +386,646 @@ def render_trend_report(report: TrendReport) -> str:
         )
 
     return "\n".join(lines)
+
+
+def render_html_report(report: GameReport) -> str:
+    moment_cards = "\n".join(
+        _render_moment_card(item, report.color) for item in report.top_mistakes
+    )
+    if not moment_cards:
+        moment_cards = (
+            '<section class="empty">No major mistakes were flagged at the chosen depth.</section>'
+        )
+
+    meta_rows = [
+        ("Color", report.color),
+        ("Result", report.result),
+        ("Opening", report.opening),
+        ("Time class", report.time_class),
+        ("Ended", report.end_time),
+    ]
+    if report.player_rating is not None:
+        meta_rows.append(("Player rating", str(report.player_rating)))
+
+    return _html_document(
+        title=f"Chess Eval V1: {report.username}",
+        body=f"""
+<header class="hero">
+  <p class="eyebrow">Chess Eval V1</p>
+  <h1>{escape(report.username)}</h1>
+  <p class="lede">{escape(report.takeaway)}</p>
+</header>
+
+<main>
+  <section class="summary-grid">
+    {_metric_card("Accuracy", f"{report.accuracy_rating:.1f}", f"{report.accuracy_label} / 100")}
+    {_metric_card("Average loss", f"{report.average_cp_loss:.1f}", "centipawns")}
+    {_metric_card("Moves", str(report.total_player_moves), "player moves analyzed")}
+    {_metric_card("Issues", str(report.mistakes + report.misses + report.blunders), "mistakes, misses, blunders")}
+  </section>
+
+  <section class="panel">
+    <div class="section-head">
+      <p class="eyebrow">Game</p>
+      <h2>Context</h2>
+    </div>
+    <dl class="meta-list">
+      {_render_meta_rows(meta_rows)}
+    </dl>
+    {_game_link(report.url)}
+  </section>
+
+  <section class="panel">
+    <div class="section-head">
+      <p class="eyebrow">Review</p>
+      <h2>Biggest Moments</h2>
+    </div>
+    <div class="legend">
+      <span><i class="dot best"></i> Best move</span>
+      <span><i class="dot played"></i> Played move</span>
+    </div>
+    <div class="moments">{moment_cards}</div>
+  </section>
+</main>
+""",
+    )
+
+
+def render_html_trend_report(report: TrendReport) -> str:
+    top_moments = sorted(
+        (
+            (game, item)
+            for game in report.games
+            for item in game.top_mistakes
+        ),
+        key=lambda pair: (
+            pair[1].expected_points_loss,
+            _severity_rank(pair[1].severity),
+            pair[1].cp_loss,
+        ),
+        reverse=True,
+    )[:8]
+    moment_cards = "\n".join(
+        _render_moment_card(item, game.color, subtitle=f"{game.end_time} - {game.opening}")
+        for game, item in top_moments
+    )
+    if not moment_cards:
+        moment_cards = '<section class="empty">No major moments were flagged.</section>'
+
+    opening_rows = "\n".join(
+        f"<li><span>{escape(opening)}</span><strong>{count}</strong></li>"
+        for opening, count in report.common_openings
+    )
+    phase_rows = "\n".join(
+        f"<li><span>{escape(phase)}</span><strong>{count}</strong></li>"
+        for phase, count in sorted(
+            report.phase_counts.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+    )
+    lesson_rows = "\n".join(
+        f"<li>{escape(lesson)}</li>" for lesson in report.recurring_lessons
+    )
+
+    return _html_document(
+        title=f"Chess Eval Trend: {report.username}",
+        body=f"""
+<header class="hero">
+  <p class="eyebrow">Chess Eval Trend</p>
+  <h1>{escape(report.username)}</h1>
+  <p class="lede">A review of the last {len(report.games)} public game{_plural(len(report.games))}, focused on repeated patterns rather than one-off engine verdicts.</p>
+</header>
+
+<main>
+  <section class="summary-grid">
+    {_metric_card("Average accuracy", f"{report.average_accuracy:.1f}", f"{_accuracy_label(report.average_accuracy)} / 100")}
+    {_metric_card("Average loss", f"{report.average_cp_loss:.1f}", "centipawns")}
+    {_metric_card("Games", str(len(report.games)), "recent games analyzed")}
+    {_metric_card("Serious issues", str(report.mistakes + report.misses + report.blunders), "mistakes, misses, blunders")}
+  </section>
+
+  <section class="panel">
+    <div class="section-head">
+      <p class="eyebrow">Training</p>
+      <h2>Recurring Lessons</h2>
+    </div>
+    <ul class="lesson-list">{lesson_rows}</ul>
+  </section>
+
+  <section class="split">
+    <div class="panel">
+      <div class="section-head">
+        <p class="eyebrow">Openings</p>
+        <h2>Common Lines</h2>
+      </div>
+      <ul class="rank-list">{opening_rows}</ul>
+    </div>
+    <div class="panel">
+      <div class="section-head">
+        <p class="eyebrow">Phases</p>
+        <h2>Serious Issues</h2>
+      </div>
+      <ul class="rank-list">{phase_rows}</ul>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="section-head">
+      <p class="eyebrow">Review</p>
+      <h2>Biggest Moments</h2>
+    </div>
+    <div class="legend">
+      <span><i class="dot best"></i> Best move</span>
+      <span><i class="dot played"></i> Played move</span>
+    </div>
+    <div class="moments">{moment_cards}</div>
+  </section>
+</main>
+""",
+    )
+
+
+def _html_document(title: str, body: str) -> str:
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>{escape(title)}</title>
+  <style>
+    :root {{
+      color-scheme: light;
+      --ink: #172118;
+      --muted: #637061;
+      --paper: #f6f2e9;
+      --panel: #fffdf7;
+      --line: #d9d0bf;
+      --green: #2f8a4b;
+      --red: #c2412d;
+      --gold: #bd7a23;
+      --blue: #286d8f;
+      --shadow: 0 18px 45px rgba(38, 31, 19, 0.12);
+    }}
+
+    * {{ box-sizing: border-box; }}
+
+    body {{
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(135deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.2)),
+        radial-gradient(circle at top left, rgba(47, 138, 75, 0.18), transparent 34rem),
+        radial-gradient(circle at bottom right, rgba(189, 122, 35, 0.14), transparent 30rem),
+        var(--paper);
+      font-family: Georgia, "Times New Roman", serif;
+      line-height: 1.45;
+    }}
+
+    .hero {{
+      padding: 56px clamp(20px, 5vw, 72px) 28px;
+      border-bottom: 1px solid rgba(23, 33, 24, 0.12);
+    }}
+
+    .eyebrow {{
+      margin: 0 0 10px;
+      color: var(--green);
+      font-family: "Trebuchet MS", Verdana, sans-serif;
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }}
+
+    h1, h2, h3, p {{ margin-top: 0; }}
+
+    h1 {{
+      max-width: 980px;
+      margin-bottom: 12px;
+      font-size: clamp(2.3rem, 8vw, 5.8rem);
+      line-height: 0.95;
+      letter-spacing: 0;
+    }}
+
+    h2 {{
+      margin-bottom: 0;
+      font-size: clamp(1.45rem, 2vw, 2.1rem);
+      letter-spacing: 0;
+    }}
+
+    h3 {{
+      margin-bottom: 6px;
+      font-size: 1.15rem;
+      letter-spacing: 0;
+    }}
+
+    .lede {{
+      max-width: 820px;
+      margin-bottom: 0;
+      color: var(--muted);
+      font-size: 1.08rem;
+    }}
+
+    main {{
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 28px 0 56px;
+    }}
+
+    .summary-grid {{
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin-bottom: 18px;
+    }}
+
+    .metric, .panel, .moment-card {{
+      background: rgba(255, 253, 247, 0.92);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }}
+
+    .metric {{
+      padding: 18px;
+      min-height: 112px;
+    }}
+
+    .metric .label {{
+      display: block;
+      color: var(--muted);
+      font-family: "Trebuchet MS", Verdana, sans-serif;
+      font-size: 0.78rem;
+      font-weight: 700;
+      text-transform: uppercase;
+    }}
+
+    .metric .value {{
+      display: block;
+      margin-top: 10px;
+      font-size: clamp(2rem, 4vw, 3.1rem);
+      font-weight: 700;
+      line-height: 1;
+    }}
+
+    .metric .hint {{
+      display: block;
+      margin-top: 7px;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }}
+
+    .panel {{
+      margin-top: 18px;
+      padding: clamp(18px, 3vw, 30px);
+    }}
+
+    .section-head {{
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 18px;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 14px;
+    }}
+
+    .section-head .eyebrow {{ margin-bottom: 4px; }}
+
+    .meta-list {{
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin: 0;
+    }}
+
+    .meta-list div {{
+      border-left: 3px solid rgba(47, 138, 75, 0.35);
+      padding-left: 12px;
+    }}
+
+    dt {{
+      color: var(--muted);
+      font-family: "Trebuchet MS", Verdana, sans-serif;
+      font-size: 0.76rem;
+      font-weight: 700;
+      text-transform: uppercase;
+    }}
+
+    dd {{
+      margin: 4px 0 0;
+      font-size: 1rem;
+      font-weight: 700;
+    }}
+
+    .game-link {{
+      display: inline-flex;
+      margin-top: 18px;
+      color: var(--green);
+      font-family: "Trebuchet MS", Verdana, sans-serif;
+      font-weight: 700;
+      text-decoration: none;
+    }}
+
+    .legend {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      margin-bottom: 16px;
+      color: var(--muted);
+      font-family: "Trebuchet MS", Verdana, sans-serif;
+      font-size: 0.9rem;
+    }}
+
+    .dot {{
+      display: inline-block;
+      width: 11px;
+      height: 11px;
+      margin-right: 7px;
+      border-radius: 50%;
+      vertical-align: -1px;
+    }}
+
+    .dot.best {{ background: var(--green); }}
+    .dot.played {{ background: var(--red); }}
+
+    .moments {{
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 18px;
+    }}
+
+    .moment-card {{
+      display: grid;
+      grid-template-columns: minmax(260px, 380px) minmax(0, 1fr);
+      gap: clamp(18px, 3vw, 30px);
+      padding: clamp(14px, 2vw, 22px);
+      box-shadow: none;
+    }}
+
+    .board-wrap {{
+      width: 100%;
+      align-self: start;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #e2d4bd;
+    }}
+
+    .board-wrap svg {{
+      display: block;
+      width: 100%;
+      height: auto;
+    }}
+
+    .moment-body {{
+      min-width: 0;
+    }}
+
+    .badge {{
+      display: inline-flex;
+      align-items: center;
+      margin-bottom: 12px;
+      padding: 5px 9px;
+      border-radius: 999px;
+      color: #fff;
+      font-family: "Trebuchet MS", Verdana, sans-serif;
+      font-size: 0.78rem;
+      font-weight: 700;
+    }}
+
+    .badge.inaccuracy {{ background: var(--blue); }}
+    .badge.mistake {{ background: var(--gold); }}
+    .badge.miss {{ background: #9b4d9a; }}
+    .badge.blunder {{ background: var(--red); }}
+
+    .subtitle {{
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }}
+
+    .move-line {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 14px 0;
+    }}
+
+    .move-pill {{
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 9px 11px;
+      background: #faf5e9;
+      font-family: "Trebuchet MS", Verdana, sans-serif;
+      font-size: 0.95rem;
+    }}
+
+    .move-pill strong {{
+      color: var(--ink);
+    }}
+
+    .detail-grid {{
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin: 14px 0;
+    }}
+
+    .detail-grid div {{
+      border-top: 1px solid var(--line);
+      padding-top: 10px;
+    }}
+
+    .detail-grid span {{
+      display: block;
+      color: var(--muted);
+      font-family: "Trebuchet MS", Verdana, sans-serif;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+    }}
+
+    .detail-grid strong {{
+      display: block;
+      margin-top: 4px;
+      font-size: 1rem;
+    }}
+
+    .note {{
+      margin: 12px 0;
+      color: var(--muted);
+    }}
+
+    .candidate-list {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 0;
+      margin: 12px 0 0;
+      list-style: none;
+    }}
+
+    .candidate-list li {{
+      border: 1px solid rgba(47, 138, 75, 0.24);
+      border-radius: 999px;
+      padding: 6px 9px;
+      background: rgba(47, 138, 75, 0.07);
+      font-family: "Trebuchet MS", Verdana, sans-serif;
+      font-size: 0.86rem;
+    }}
+
+    .split {{
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+    }}
+
+    .rank-list, .lesson-list {{
+      padding: 0;
+      margin: 0;
+      list-style: none;
+    }}
+
+    .rank-list li {{
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      border-bottom: 1px solid var(--line);
+      padding: 12px 0;
+    }}
+
+    .rank-list li:last-child {{ border-bottom: 0; }}
+
+    .lesson-list li {{
+      border-left: 3px solid var(--green);
+      padding: 0 0 0 14px;
+      margin: 0 0 16px;
+    }}
+
+    .empty {{
+      padding: 24px;
+      border: 1px dashed var(--line);
+      border-radius: 8px;
+      color: var(--muted);
+    }}
+
+    @media (max-width: 880px) {{
+      .summary-grid, .split, .meta-list {{
+        grid-template-columns: 1fr 1fr;
+      }}
+
+      .moment-card {{
+        grid-template-columns: 1fr;
+      }}
+
+      .board-wrap {{
+        max-width: 420px;
+      }}
+    }}
+
+    @media (max-width: 560px) {{
+      .hero {{
+        padding-top: 38px;
+      }}
+
+      main {{
+        width: min(100% - 20px, 1180px);
+      }}
+
+      .summary-grid, .split, .meta-list, .detail-grid {{
+        grid-template-columns: 1fr;
+      }}
+    }}
+  </style>
+</head>
+<body>
+{body}
+</body>
+</html>
+"""
+
+
+def _metric_card(label: str, value: str, hint: str) -> str:
+    return (
+        '<article class="metric">'
+        f'<span class="label">{escape(label)}</span>'
+        f'<span class="value">{escape(value)}</span>'
+        f'<span class="hint">{escape(hint)}</span>'
+        "</article>"
+    )
+
+
+def _render_meta_rows(rows: list[tuple[str, str]]) -> str:
+    return "\n".join(
+        f"<div><dt>{escape(label)}</dt><dd>{escape(value)}</dd></div>"
+        for label, value in rows
+    )
+
+
+def _game_link(url: str) -> str:
+    if not url:
+        return ""
+    safe_url = escape(url, quote=True)
+    return f'<a class="game-link" href="{safe_url}">Open game on Chess.com</a>'
+
+
+def _render_moment_card(
+    item: Mistake,
+    color: str,
+    *,
+    subtitle: str = "",
+) -> str:
+    candidate_items = "\n".join(
+        f"<li>{escape(candidate.san)} <strong>{escape(candidate.score)}</strong></li>"
+        for candidate in item.top_lines[:3]
+    )
+    subtitle_html = f'<p class="subtitle">{escape(subtitle)}</p>' if subtitle else ""
+
+    return f"""
+<article class="moment-card">
+  <div class="board-wrap">{_board_svg(item, color)}</div>
+  <div class="moment-body">
+    <span class="badge {_severity_class(item.severity)}">{escape(item.severity)}</span>
+    <h3>{escape(item.move_label)} in the {escape(item.phase.lower())}</h3>
+    {subtitle_html}
+    <div class="move-line">
+      <div class="move-pill">Played <strong>{escape(item.played)}</strong></div>
+      <div class="move-pill">Best <strong>{escape(item.best)}</strong></div>
+    </div>
+    <div class="detail-grid">
+      <div><span>Expected loss</span><strong>{item.expected_points_loss:.2f}</strong></div>
+      <div><span>Eval swing</span><strong>{item.cp_loss} cp</strong></div>
+      <div><span>Scores</span><strong>{escape(item.best_score)} to {escape(item.played_score)}</strong></div>
+    </div>
+    <p class="note">{escape(item.note)}</p>
+    <ul class="candidate-list">{candidate_items}</ul>
+  </div>
+</article>
+"""
+
+
+def _board_svg(item: Mistake, color: str) -> str:
+    board = chess.Board(item.fen)
+    best_move = chess.Move.from_uci(item.best_uci)
+    played_move = chess.Move.from_uci(item.played_uci)
+    orientation = chess.WHITE if color == "White" else chess.BLACK
+    arrows = [
+        chess.svg.Arrow(best_move.from_square, best_move.to_square, color="#2f8a4b"),
+        chess.svg.Arrow(played_move.from_square, played_move.to_square, color="#c2412d"),
+    ]
+    return chess.svg.board(
+        board,
+        arrows=arrows,
+        coordinates=True,
+        orientation=orientation,
+        size=420,
+    )
+
+
+def _severity_class(severity: str) -> str:
+    return severity.lower().replace(" ", "-")
 
 
 def _score_to_numeric(score: chess.engine.Score) -> int:

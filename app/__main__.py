@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from .analyzer import (
     analyze_latest_game,
     build_trend_report,
+    render_html_report,
+    render_html_trend_report,
     render_report,
     render_trend_report,
 )
@@ -61,6 +64,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
         help="Analyze the last N finished public games and summarize trends",
     )
+    parser.add_argument(
+        "--html",
+        help="Write a standalone HTML report to this path",
+    )
     return parser
 
 
@@ -84,6 +91,8 @@ def main() -> int:
                 max_mistakes=args.max_mistakes,
             )
             print(render_report(report))
+            if args.html:
+                _write_html(args.html, render_html_report(report))
         else:
             recent_games = fetch_recent_games(args.username, args.last)
             reports = [
@@ -98,7 +107,10 @@ def main() -> int:
                 )
                 for game in recent_games
             ]
-            print(render_trend_report(build_trend_report(args.username, reports)))
+            trend_report = build_trend_report(args.username, reports)
+            print(render_trend_report(trend_report))
+            if args.html:
+                _write_html(args.html, render_html_trend_report(trend_report))
     except ChessComError as exc:
         print(f"Chess.com error: {exc}", file=sys.stderr)
         return 2
@@ -113,6 +125,13 @@ def main() -> int:
         return 1
 
     return 0
+
+
+def _write_html(path: str, html: str) -> None:
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(html, encoding="utf-8")
+    print(f"HTML report written to {output_path}", file=sys.stderr)
 
 
 if __name__ == "__main__":
