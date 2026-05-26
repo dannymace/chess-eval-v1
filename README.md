@@ -5,7 +5,7 @@ Minimal Dockerized CLI that:
 - takes a Chess.com username
 - fetches the latest finished public game from Chess.com
 - analyzes that game locally with Stockfish
-- prints a short coaching-style report with an opening name, accuracy rating, Chess.com-style move categories, and tactical pattern hints
+- prints a short coaching-style report with an opening name, accuracy rating, Chess.com-style move categories, best-move highlights, and tactical pattern hints
 
 Current release: `1.0.1`
 
@@ -99,7 +99,7 @@ docker run --rm chess-eval-v1 --version
 - Chess.com PubAPI is public and read-only. Recent games can lag because the API is cached upstream.
 - V1 focuses on your moves only, not your opponent's moves.
 - `--last N` analyzes the most recent finished public games and produces a trend report instead of a full per-game report.
-- HTML is created on every run. `--html PATH` overrides the automatic path. Single-game reports include chessboards for the biggest moments and detected tactics; trend reports include summary tables plus board examples for tactical misses.
+- HTML is created on every run. `--html PATH` overrides the automatic path. Single-game reports include chessboards for the biggest moments, your three best moves, and detected tactics; trend reports include summary tables plus board examples for strong moves and tactical misses.
 - Opening names are read from Chess.com PGN headers when available. If Chess.com only provides an ECO code and URL, the app converts the URL slug into a readable name.
 - ACPL is average centipawn loss across the analyzed player's moves. In trend reports it is weighted by player move count across games.
 - Accuracy is a `0-100` estimate derived from per-move centipawn loss. It is useful for comparing your own games, not as an exact Chess.com accuracy clone.

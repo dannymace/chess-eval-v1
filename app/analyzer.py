@@ -49,6 +49,24 @@ class Mistake:
 
 
 @dataclass(slots=True)
+class MoveHighlight:
+    move_label: str
+    phase: str
+    played: str
+    played_uci: str
+    best: str
+    best_uci: str
+    fen: str
+    score: str
+    cp_loss: int
+    engine_match: str
+    reason: str
+    motifs: list[str]
+    top_lines: list[CandidateMove]
+    rank_score: float
+
+
+@dataclass(slots=True)
 class GameReport:
     username: str
     opponent: str
@@ -70,6 +88,7 @@ class GameReport:
     misses: int
     blunders: int
     tactical_patterns: list[tuple[str, int]]
+    best_moves: list[MoveHighlight]
     flagged_moves: list[Mistake]
     top_mistakes: list[Mistake]
     takeaway: str
@@ -131,6 +150,7 @@ def analyze_latest_game(
     board = game.board()
     limit = chess.engine.Limit(depth=depth)
     mistakes: list[Mistake] = []
+    move_highlights: list[MoveHighlight] = []
     cp_losses: list[int] = []
     player_moves = 0
     stockfish_threads = _resolve_threads(threads)
@@ -158,6 +178,8 @@ def analyze_latest_game(
                 best_move = best_info["pv"][0]
                 best_score = best_info["score"].pov(player_color)
                 best_san = board.san(best_move)
+                move_label = _move_label(board, san)
+                phase = _phase_name(board)
 
                 matching_line = next(
                     (
@@ -187,6 +209,49 @@ def analyze_latest_game(
                     played_score,
                     player_rating,
                 )
+                top_lines = [
+                    CandidateMove(
+                        san=board.san(info["pv"][0]),
+                        score=_format_score(info["score"].pov(player_color)),
+                    )
+                    for info in best_lines
+                    if info.get("pv")
+                ]
+                best_motifs = _positive_move_motifs(board, move)
+                if _is_best_move_highlight(move, best_move, cp_loss):
+                    move_highlights.append(
+                        MoveHighlight(
+                            move_label=move_label,
+                            phase=phase,
+                            played=san,
+                            played_uci=move.uci(),
+                            best=best_san,
+                            best_uci=best_move.uci(),
+                            fen=board.fen(),
+                            score=_format_score(played_score),
+                            cp_loss=cp_loss,
+                            engine_match=_engine_match_label(move, best_move, cp_loss),
+                            reason=_best_move_reason(
+                                board,
+                                move,
+                                best_move,
+                                cp_loss,
+                                best_motifs,
+                                phase,
+                            ),
+                            motifs=best_motifs,
+                            top_lines=top_lines,
+                            rank_score=_best_move_rank_score(
+                                board,
+                                move,
+                                best_move,
+                                cp_loss,
+                                played_score,
+                                player_rating,
+                            ),
+                        )
+                    )
+
                 severity = _classify_severity(
                     best_score,
                     played_score,
@@ -196,8 +261,8 @@ def analyze_latest_game(
                 if severity is not None:
                     mistakes.append(
                         Mistake(
-                            move_label=_move_label(board, san),
-                            phase=_phase_name(board),
+                            move_label=move_label,
+                            phase=phase,
                             played=san,
                             played_uci=move.uci(),
                             best=best_san,
@@ -216,16 +281,7 @@ def analyze_latest_game(
                                 severity,
                             ),
                             motifs=_detect_tactical_motifs(board, move, best_move),
-                            top_lines=[
-                                CandidateMove(
-                                    san=board.san(info["pv"][0]),
-                                    score=_format_score(
-                                        info["score"].pov(player_color)
-                                    ),
-                                )
-                                for info in best_lines
-                                if info.get("pv")
-                            ],
+                            top_lines=top_lines,
                         )
                     )
 
@@ -241,6 +297,11 @@ def analyze_latest_game(
         reverse=True,
     )
     top_mistakes = sorted_mistakes[:max_mistakes]
+    best_moves = sorted(
+        move_highlights,
+        key=lambda item: item.rank_score,
+        reverse=True,
+    )[:3]
     accuracy_rating = _accuracy_rating(cp_losses)
     end_timestamp = int(latest_game.game["end_time"])
     game_url = str(latest_game.game.get("url", ""))
@@ -266,6 +327,7 @@ def analyze_latest_game(
         misses=sum(1 for item in mistakes if item.severity == "Miss"),
         blunders=sum(1 for item in mistakes if item.severity == "Blunder"),
         tactical_patterns=_motif_counts(sorted_mistakes),
+        best_moves=best_moves,
         flagged_moves=sorted_mistakes,
         top_mistakes=top_mistakes,
         takeaway=_build_takeaway(top_mistakes),
@@ -336,6 +398,30 @@ def render_report(report: GameReport) -> str:
             f"- Misses: {report.misses}",
             f"- Blunders: {report.blunders}",
             "",
+            "## Best Moves",
+        ]
+    )
+
+    if not report.best_moves:
+        lines.append("- No standout best moves were identified at the chosen depth.")
+    else:
+        for item in report.best_moves:
+            candidate_text = ", ".join(
+                f"{candidate.san} ({candidate.score})" for candidate in item.top_lines[:3]
+            )
+            lines.extend(
+                [
+                    f"- {item.move_label} [{item.phase}]: `{item.played}` ({item.engine_match}).",
+                    f"  Why: {item.reason}",
+                    f"  Eval after move: {item.score}. Centipawn loss: {item.cp_loss}.",
+                    f"  Themes: {', '.join(item.motifs)}.",
+                    f"  Engine candidates: {candidate_text}",
+                ]
+            )
+
+    lines.extend(
+        [
+            "",
             "## Biggest Moments",
         ]
     )
@@ -375,6 +461,7 @@ def render_report(report: GameReport) -> str:
 
 
 def render_trend_report(report: TrendReport) -> str:
+    best_moves = _top_best_moves_across_games(report)
     lines = [
         f"# Chess Eval Trend: {report.username}",
         "",
@@ -392,6 +479,15 @@ def render_trend_report(report: TrendReport) -> str:
 
     for lesson in report.recurring_lessons:
         lines.append(f"- {lesson}")
+
+    if best_moves:
+        lines.extend(["", "## Best Moves Across These Games"])
+        for game, item in best_moves:
+            lines.append(
+                f"- {game.end_time} vs {game.opponent}: "
+                f"{item.move_label} `{item.played}` ({item.engine_match}). "
+                f"{item.reason}"
+            )
 
     lines.extend(["", "## Common Openings"])
     for opening, count in report.common_openings:
@@ -452,6 +548,13 @@ def render_html_report(report: GameReport) -> str:
         tactic_cards = (
             '<section class="empty">No concrete missed tactic was detected beyond general calculation drift.</section>'
         )
+    best_move_cards = "\n".join(
+        _render_best_move_card(item, report.color) for item in report.best_moves
+    )
+    if not best_move_cards:
+        best_move_cards = (
+            '<section class="empty">No standout best moves were identified at the chosen depth.</section>'
+        )
 
     return _html_document(
         title=f"Chess Eval V1: {report.username}",
@@ -483,6 +586,15 @@ def render_html_report(report: GameReport) -> str:
 
   <section class="panel">
     <div class="section-head">
+      <p class="eyebrow">Strengths</p>
+      <h2>Best Moves</h2>
+    </div>
+    <p class="section-note">These are your strongest engine-approved moves, ranked by precision plus forcing or tactical value.</p>
+    <div class="moments">{best_move_cards}</div>
+  </section>
+
+  <section class="panel">
+    <div class="section-head">
       <p class="eyebrow">Review</p>
       <h2>Biggest Moments</h2>
     </div>
@@ -508,6 +620,7 @@ def render_html_report(report: GameReport) -> str:
 
 
 def render_html_trend_report(report: TrendReport) -> str:
+    best_moves = _top_best_moves_across_games(report)
     top_issues = sorted(
         (
             (game, item)
@@ -544,6 +657,21 @@ def render_html_trend_report(report: TrendReport) -> str:
     lesson_rows = "\n".join(
         f"<li>{escape(lesson)}</li>" for lesson in report.recurring_lessons
     )
+    best_move_cards = "\n".join(
+        _render_best_move_card(
+            item,
+            game.color,
+            subtitle=(
+                f"{game.end_time} vs {game.opponent}. "
+                f"{game.color} {game.result}. {game.opening}."
+            ),
+        )
+        for game, item in best_moves
+    )
+    if not best_move_cards:
+        best_move_cards = (
+            '<section class="empty">No standout best moves were identified at the chosen depth.</section>'
+        )
     motif_rows = _rank_rows(report.tactical_patterns)
     game_rows = "\n".join(_render_recent_game_row(game) for game in report.games)
     tactic_cards = "\n".join(
@@ -586,6 +714,15 @@ def render_html_trend_report(report: TrendReport) -> str:
       <h2>Recurring Lessons</h2>
     </div>
     <ul class="lesson-list">{lesson_rows}</ul>
+  </section>
+
+  <section class="panel">
+    <div class="section-head">
+      <p class="eyebrow">Strengths</p>
+      <h2>Best Moves Across Games</h2>
+    </div>
+    <p class="section-note">These are the strongest player moves found across the analyzed games, ranked by precision plus forcing or tactical value.</p>
+    <div class="moments">{best_move_cards}</div>
   </section>
 
   <section class="split">
@@ -932,6 +1069,7 @@ def _html_document(title: str, body: str) -> str:
     .badge.mistake {{ background: var(--gold); }}
     .badge.miss {{ background: #9b4d9a; }}
     .badge.blunder {{ background: var(--red); }}
+    .badge.best-move {{ background: var(--green); }}
 
     .subtitle {{
       margin-bottom: 8px;
@@ -1263,6 +1401,45 @@ def _render_moment_card(
 """
 
 
+def _render_best_move_card(
+    item: MoveHighlight,
+    color: str,
+    *,
+    subtitle: str = "",
+) -> str:
+    candidate_items = "\n".join(
+        f"<li>{escape(candidate.san)} <strong>{escape(candidate.score)}</strong></li>"
+        for candidate in item.top_lines[:3]
+    )
+    motif_items = "\n".join(
+        f"<li>{escape(motif)}</li>" for motif in item.motifs
+    )
+    subtitle_html = f'<p class="subtitle">{escape(subtitle)}</p>' if subtitle else ""
+
+    return f"""
+<article class="moment-card">
+  <div class="board-wrap">{_best_move_board_svg(item, color)}</div>
+  <div class="moment-body">
+    <span class="badge best-move">Best move</span>
+    <h3>{escape(item.move_label)} in the {escape(item.phase.lower())}</h3>
+    {subtitle_html}
+    <div class="move-line">
+      <div class="move-pill">Played <strong>{escape(item.played)}</strong></div>
+      <div class="move-pill">{escape(item.engine_match)}</div>
+    </div>
+    <p class="tactic-callout"><span>Why it worked</span>{escape(item.reason)}</p>
+    <div class="detail-grid">
+      <div><span>Centipawn loss</span><strong>{item.cp_loss}</strong></div>
+      <div><span>Eval after move</span><strong>{escape(item.score)}</strong></div>
+      <div><span>Engine top</span><strong>{escape(item.best)}</strong></div>
+    </div>
+    <ul class="motif-list">{motif_items}</ul>
+    <ul class="candidate-list">{candidate_items}</ul>
+  </div>
+</article>
+"""
+
+
 def _board_svg(item: Mistake, color: str) -> str:
     board = chess.Board(item.fen)
     best_move = chess.Move.from_uci(item.best_uci)
@@ -1272,6 +1449,35 @@ def _board_svg(item: Mistake, color: str) -> str:
         chess.svg.Arrow(best_move.from_square, best_move.to_square, color="#2f8a4b"),
         chess.svg.Arrow(played_move.from_square, played_move.to_square, color="#c2412d"),
     ]
+    return chess.svg.board(
+        board,
+        arrows=arrows,
+        coordinates=True,
+        orientation=orientation,
+        size=420,
+    )
+
+
+def _best_move_board_svg(item: MoveHighlight, color: str) -> str:
+    board = chess.Board(item.fen)
+    played_move = chess.Move.from_uci(item.played_uci)
+    orientation = chess.WHITE if color == "White" else chess.BLACK
+    arrows = [
+        chess.svg.Arrow(
+            played_move.from_square,
+            played_move.to_square,
+            color="#2f8a4b",
+        )
+    ]
+    if item.best_uci != item.played_uci:
+        best_move = chess.Move.from_uci(item.best_uci)
+        arrows.append(
+            chess.svg.Arrow(
+                best_move.from_square,
+                best_move.to_square,
+                color="#286d8f",
+            )
+        )
     return chess.svg.board(
         board,
         arrows=arrows,
@@ -1313,6 +1519,135 @@ def _weighted_average_cp_loss(reports: list[GameReport]) -> float:
         for report in reports
     )
     return total_loss / total_moves
+
+
+def _top_best_moves_across_games(
+    report: TrendReport,
+    limit: int = 3,
+) -> list[tuple[GameReport, MoveHighlight]]:
+    highlights = [
+        (game, move)
+        for game in report.games
+        for move in game.best_moves
+    ]
+    return sorted(
+        highlights,
+        key=lambda pair: pair[1].rank_score,
+        reverse=True,
+    )[:limit]
+
+
+def _is_best_move_highlight(
+    played_move: chess.Move,
+    best_move: chess.Move,
+    cp_loss: int,
+) -> bool:
+    return played_move == best_move or cp_loss <= 20
+
+
+def _engine_match_label(
+    played_move: chess.Move,
+    best_move: chess.Move,
+    cp_loss: int,
+) -> str:
+    if played_move == best_move:
+        return "Stockfish top choice"
+    if cp_loss <= 10:
+        return "Within 0.10 pawns of best"
+    return "Engine-approved alternative"
+
+
+def _positive_move_motifs(board: chess.Board, move: chess.Move) -> list[str]:
+    motifs: list[str] = []
+
+    if board.gives_check(move):
+        motifs.append("Forcing check")
+    if board.is_capture(move):
+        if _wins_higher_value_material(board, move):
+            motifs.append("Wins material")
+        else:
+            motifs.append("Forcing capture")
+    if _creates_fork(board, move):
+        motifs.append("Fork tactic")
+    if _best_move_attacks_hanging_piece(board, move):
+        motifs.append("Attacks loose piece")
+    if _targets_king_zone(board, move):
+        motifs.append("King pressure")
+    if _creates_promotion_threat(board, move):
+        motifs.append("Passed-pawn progress")
+
+    if not motifs:
+        motifs.append("Precise engine move")
+
+    return motifs
+
+
+def _best_move_rank_score(
+    board: chess.Board,
+    played_move: chess.Move,
+    best_move: chess.Move,
+    cp_loss: int,
+    played_score: chess.engine.Score,
+    player_rating: int | None,
+) -> float:
+    score = 100.0 - min(cp_loss, 100)
+    if played_move == best_move:
+        score += 30.0
+    if board.gives_check(played_move):
+        score += 12.0
+    if board.is_capture(played_move):
+        score += 8.0
+    if _wins_higher_value_material(board, played_move):
+        score += 18.0
+    if _creates_fork(board, played_move):
+        score += 18.0
+    if _best_move_attacks_hanging_piece(board, played_move):
+        score += 12.0
+    if _targets_king_zone(board, played_move):
+        score += 8.0
+    if _creates_promotion_threat(board, played_move):
+        score += 10.0
+    if _phase_name(board) == "Opening":
+        score -= 8.0
+
+    score += _expected_points(played_score, player_rating) * 10.0
+    return score
+
+
+def _best_move_reason(
+    board: chess.Board,
+    played_move: chess.Move,
+    best_move: chess.Move,
+    cp_loss: int,
+    motifs: list[str],
+    phase: str,
+) -> str:
+    if played_move == best_move:
+        engine_text = "It matched Stockfish's top choice."
+    elif cp_loss <= 10:
+        engine_text = "It stayed essentially even with Stockfish's top line."
+    else:
+        engine_text = "It was a strong practical alternative to Stockfish's first choice."
+
+    primary = motifs[0] if motifs else "Precise engine move"
+    reason_map = {
+        "Forcing check": "The check made the opponent respond to your threat instead of executing their own plan.",
+        "Wins material": "The capture won material while preserving the quality of your position.",
+        "Forcing capture": "The capture clarified the position without giving away the initiative.",
+        "Fork tactic": "The move created multiple threats at once, making the defense harder.",
+        "Attacks loose piece": "It immediately targeted an undefended or poorly defended piece.",
+        "King pressure": "It increased pressure around the opponent's king.",
+        "Passed-pawn progress": "It advanced a pawn with promotion or passed-pawn implications.",
+    }
+    detail = reason_map.get(primary)
+    if detail is None and phase == "Opening":
+        detail = "It developed cleanly while keeping the engine evaluation stable."
+    elif detail is None and phase == "Endgame":
+        detail = "It kept the endgame precise, where small inaccuracies usually matter more."
+    elif detail is None:
+        detail = "It kept the position under control without conceding meaningful evaluation."
+
+    return f"{engine_text} {detail}"
 
 
 def _detect_tactical_motifs(
