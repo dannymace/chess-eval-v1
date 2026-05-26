@@ -10,7 +10,7 @@ script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 reports_dir="$script_dir/reports"
 mkdir -p "$reports_dir"
 
-image="${CHESS_EVAL_IMAGE:-chess-eval-v1:1.0.1}"
+image="${CHESS_EVAL_IMAGE:-chess-eval-v1:1.0.2}"
 container="chess-eval-v1-$(date +%s)-$$"
 container_args=("$@")
 has_html=0

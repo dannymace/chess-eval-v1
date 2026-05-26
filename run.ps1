@@ -15,7 +15,7 @@ $reports = Join-Path $repoRoot 'reports'
 New-Item -ItemType Directory -Force -Path $reports | Out-Null
 $reportsPath = (Resolve-Path $reports).ProviderPath
 
-$image = if ($env:CHESS_EVAL_IMAGE) { $env:CHESS_EVAL_IMAGE } else { 'chess-eval-v1:1.0.1' }
+$image = if ($env:CHESS_EVAL_IMAGE) { $env:CHESS_EVAL_IMAGE } else { 'chess-eval-v1:1.0.2' }
 $container = "chess-eval-v1-$([Guid]::NewGuid().ToString('N'))"
 $containerArgs = @($ChessEvalArgs)
 $hasHtml = $false

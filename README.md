@@ -7,7 +7,7 @@ Minimal Dockerized CLI that:
 - analyzes that game locally with Stockfish
 - prints a short coaching-style report with an opening name, accuracy rating, Chess.com-style move categories, best-move highlights, and tactical pattern hints
 
-Current release: `1.0.1`
+Current release: `1.0.2`
 
 ## Build
 
@@ -18,7 +18,7 @@ docker build -t chess-eval-v1 .
 Or download the release image tarball from the GitHub release and load it:
 
 ```bash
-docker load -i chess-eval-v1-1.0.1-image.tar.gz
+docker load -i chess-eval-v1-1.0.2-image.tar.gz
 ```
 
 ## Run
@@ -105,5 +105,5 @@ docker run --rm chess-eval-v1 --version
 - Accuracy is a `0-100` estimate derived from per-move centipawn loss. It is useful for comparing your own games, not as an exact Chess.com accuracy clone.
 - Move categories use an approximate expected-points model so missed winning chances are separated as `Miss` instead of being treated as raw centipawn blunders.
 - Tactical patterns are conservative heuristics over the board before a flagged move and Stockfish's preferred move.
-- The default analysis depth is `11`. The default thread count is `0`, which uses all CPUs visible inside the Docker container.
+- The default analysis depth is `14`. The default thread count is `1` for repeatable reports. Use `--threads 0` if you prefer faster all-CPU Stockfish searches and accept small run-to-run variation.
 - The report is intended to surface the biggest practical errors and one main coaching takeaway.

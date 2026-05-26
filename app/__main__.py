@@ -40,14 +40,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--depth",
         type=int,
-        default=11,
+        default=14,
         help="Search depth for Stockfish analysis",
     )
     parser.add_argument(
         "--threads",
         type=int,
-        default=0,
-        help="Number of Stockfish threads; 0 uses all CPUs visible to the container",
+        default=1,
+        help="Number of Stockfish threads; use 1 for deterministic reports, 0 for all visible CPUs",
     )
     parser.add_argument(
         "--hash-mb",
